@@ -467,7 +467,7 @@ class MainActivity : ComponentActivity() {
         return (value * resources.displayMetrics.density + 0.5f).toInt()
     }
 
-    private fun startCamera() {
+        private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
 
         future.addListener({
@@ -478,6 +478,15 @@ class MainActivity : ComponentActivity() {
                     CameraSelector.DEFAULT_FRONT_CAMERA
                 } else {
                     CameraSelector.DEFAULT_BACK_CAMERA
+                }
+
+                if (!provider.hasCamera(selector)) {
+                    Toast.makeText(
+                        this,
+                        "Эта камера недоступна",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@addListener
                 }
 
                 val preview = Preview.Builder().build().also {
@@ -500,12 +509,14 @@ class MainActivity : ComponentActivity() {
                 )
 
                 val state = camera?.cameraInfo?.zoomState?.value
-                val maxZoom = state?.maxZoomRatio ?: 1f
-                val minZoom = state?.minZoomRatio ?: 1f
 
-                camera?.cameraControl?.setZoomRatio(
-                    zoom.coerceIn(minZoom, maxZoom)
-                )
+                val minZoom = state?.minZoomRatio ?: 1f
+                val maxZoom = state?.maxZoomRatio ?: 1f
+
+                // Сохраняем только зум, доступный этой камере.
+                zoom = zoom.coerceIn(minZoom, maxZoom)
+
+                camera?.cameraControl?.setZoomRatio(zoom)
 
             } catch (e: Exception) {
                 Toast.makeText(
@@ -515,8 +526,7 @@ class MainActivity : ComponentActivity() {
                 ).show()
             }
         }, ContextCompat.getMainExecutor(this))
-    }
-
+        }
     private fun takePhoto() {
         val capture = imageCapture ?: run {
             Toast.makeText(
