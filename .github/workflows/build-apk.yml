@@ -1,6 +1,6 @@
 name: Build CineCam 13 APK
 
-on:
+"on":
 workflow_dispatch:
 push:
 branches:
