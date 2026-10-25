@@ -11,8 +11,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -25,16 +25,17 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var previewView: PreviewView
-    private lateinit var modeLabel: TextView
-    private lateinit var zoomLabel: TextView
-    private lateinit var flashButton: Button
-    private lateinit var captureButton: Button
-    private lateinit var recordButton: Button
-    private lateinit var zoomBar: SeekBar
+    private lateinit var modePhoto: TextView
+    private lateinit var modeVideo: TextView
+    private lateinit var styleLabel: TextView
+    private lateinit var flashButton: TextView
+    private lateinit var zoomRow: LinearLayout
+    private lateinit var shutter: TextView
 
     private var imageCapture: ImageCapture? = null
     private var camera: Camera? = null
@@ -42,20 +43,18 @@ class MainActivity : ComponentActivity() {
     private var flashEnabled = false
     private var videoMode = false
     private var selectedStyle = "Natural"
+    private var currentZoom = 1f
 
     private val permissionLauncher =
         registerForActivityResult(
-            ActivityResultContracts.RequestMultiplePermissions()
-        ) { permissions ->
-            if (permissions[Manifest.permission.CAMERA] == true) {
-                startCamera()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Разреши доступ к камере",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) startCamera()
+            else Toast.makeText(
+                this,
+                "Разреши доступ к камере",
+                Toast.LENGTH_LONG
+            ).show()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,7 +62,6 @@ class MainActivity : ComponentActivity() {
 
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
-        window.decorView.systemUiVisibility = 0
 
         buildInterface()
 
@@ -74,32 +72,37 @@ class MainActivity : ComponentActivity() {
         ) {
             startCamera()
         } else {
-            permissionLauncher.launch(
-                arrayOf(Manifest.permission.CAMERA)
-            )
+            permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
-    private fun makeButton(textValue: String): Button {
-        return Button(this).apply {
-            text = textValue
-            textSize = 13f
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            setBackgroundTintList(
-                android.content.res.ColorStateList.valueOf(
-                    Color.rgb(45, 45, 45)
-                )
-            )
-        }
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    private fun label(
+        text: String,
+        size: Float = 14f,
+        color: Int = Color.WHITE
+    ) = TextView(this).apply {
+        this.text = text
+        textSize = size
+        setTextColor(color)
+        gravity = Gravity.CENTER
+        includeFontPadding = false
     }
 
-    private fun makeLabel(textValue: String, size: Float): TextView {
-        return TextView(this).apply {
-            text = textValue
-            textSize = size
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
+    private fun control(
+        text: String,
+        width: Int = 52,
+        onClick: () -> Unit
+    ): TextView = label(text, 14f).apply {
+        background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(Color.rgb(38, 38, 40))
+            cornerRadius = dp(22).toFloat()
+        }
+        setOnClickListener { onClick() }
+        layoutParams = LinearLayout.LayoutParams(dp(width), dp(42)).apply {
+            setMargins(dp(4), dp(3), dp(4), dp(3))
         }
     }
 
@@ -107,52 +110,54 @@ class MainActivity : ComponentActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
+            fitsSystemWindows = true
         }
 
-        val topBar = LinearLayout(this).apply {
+        // Compact top bar
+        val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(12, 8, 12, 8)
+            setPadding(dp(8), dp(3), dp(8), dp(3))
         }
 
-        flashButton = makeButton("⚡ Off")
+        flashButton = label("ϟ", 22f)
+        flashButton.background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(Color.rgb(32, 32, 34))
+            cornerRadius = dp(22).toFloat()
+        }
         flashButton.setOnClickListener {
             flashEnabled = !flashEnabled
-            flashButton.text = if (flashEnabled) "⚡ On" else "⚡ Off"
+            flashButton.text = if (flashEnabled) "ϟ" else "ϟ̸"
             imageCapture?.flashMode =
                 if (flashEnabled) ImageCapture.FLASH_MODE_ON
                 else ImageCapture.FLASH_MODE_OFF
         }
+        top.addView(
+            flashButton,
+            LinearLayout.LayoutParams(dp(44), dp(40))
+        )
 
-        val title = makeLabel("CINECAM", 18f).apply {
-            letterSpacing = 0.15f
+        val title = label("CINECAM", 15f).apply {
+            letterSpacing = 0.2f
         }
+        top.addView(
+            title,
+            LinearLayout.LayoutParams(0, dp(42), 1f)
+        )
 
-        val settingsButton = makeButton("⚙")
-        settingsButton.setOnClickListener {
+        val settings = control("⚙", 44) {
             Toast.makeText(
                 this,
-                "Расширенные настройки добавим следующим этапом",
+                "Дополнительные настройки добавим позже",
                 Toast.LENGTH_SHORT
             ).show()
         }
+        top.addView(settings)
+        root.addView(top)
 
-        topBar.addView(
-            flashButton,
-            LinearLayout.LayoutParams(0, 48, 1f)
-        )
-        topBar.addView(
-            title,
-            LinearLayout.LayoutParams(0, 48, 2f)
-        )
-        topBar.addView(
-            settingsButton,
-            LinearLayout.LayoutParams(0, 48, 1f)
-        )
-        root.addView(topBar)
-
-        val cameraArea = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(15, 15, 15))
+        // Camera preview fills remaining space
+        val previewFrame = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(12, 12, 12))
         }
 
         previewView = PreviewView(this).apply {
@@ -160,7 +165,7 @@ class MainActivity : ComponentActivity() {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         }
 
-        cameraArea.addView(
+        previewFrame.addView(
             previewView,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -168,38 +173,53 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-        val overlay = LinearLayout(this).apply {
+        val zoomOverlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16, 12, 16, 12)
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            setPadding(dp(8), dp(12), dp(8), dp(8))
         }
 
-        zoomLabel = makeLabel("1.0×", 14f).apply {
-            gravity = Gravity.END
+        val zoomScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
         }
 
-        overlay.addView(
-            zoomLabel,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                32
-            )
-        )
+        zoomRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+        }
+
+        listOf(1f, 2f, 3f).forEach { zoom ->
+            val button = control("${zoom.toInt()}×", 52) {
+                setZoom(zoom)
+            }
+            zoomRow.addView(button)
+        }
+
+        zoomScroll.addView(zoomRow)
+        zoomOverlay.addView(zoomScroll)
 
         val spacer = View(this)
-        overlay.addView(
+        zoomOverlay.addView(
             spacer,
-            LinearLayout.LayoutParams(1, 0, 1f)
+            LinearLayout.LayoutParams(1, dp(8), 1f)
         )
 
-        modeLabel = makeLabel("PHOTO  •  $selectedStyle", 13f).apply {
-            gravity = Gravity.START
-            setPadding(0, 0, 0, 12)
+        val overlayBottom = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.BOTTOM
         }
 
-        overlay.addView(modeLabel)
+        styleLabel = label("NATURAL", 12f).apply {
+            gravity = Gravity.START
+            setPadding(dp(8), dp(6), dp(8), dp(8))
+            letterSpacing = 0.12f
+        }
+        overlayBottom.addView(styleLabel)
 
-        cameraArea.addView(
-            overlay,
+        zoomOverlay.addView(overlayBottom)
+
+        previewFrame.addView(
+            zoomOverlay,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -207,7 +227,7 @@ class MainActivity : ComponentActivity() {
         )
 
         root.addView(
-            cameraArea,
+            previewFrame,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -215,117 +235,328 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-        val stylePanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(8, 8, 8, 4)
-            setBackgroundColor(Color.rgb(10, 10, 10))
+        // Scrollable style strip
+        val styleScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            setBackgroundColor(Color.rgb(12, 12, 12))
         }
-
-        stylePanel.addView(
-            makeLabel("CINECAM STYLES", 11f),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                24
-            )
-        )
 
         val styleRow = LinearLayout(this).apply {
-            gravity = Gravity.CENTER
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(5), dp(8), dp(5))
         }
 
-        val styles = listOf("Natural", "Cinema", "Warm", "Cool", "Mono")
-
-        styles.forEach { style ->
-            val button = makeButton(style)
-            button.textSize = 11f
-
-            if (style == selectedStyle) {
-                button.setBackgroundTintList(
-                    android.content.res.ColorStateList.valueOf(
-                        Color.rgb(85, 85, 85)
+        listOf("Natural", "Cinema", "Warm", "Cool", "Mono").forEach { style ->
+            val chip = label(style, 12f).apply {
+                setPadding(dp(14), 0, dp(14), 0)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(
+                        if (style == selectedStyle) Color.rgb(75, 75, 78)
+                        else Color.rgb(32, 32, 34)
                     )
-                )
-            }
+                    cornerRadius = dp(18).toFloat()
+                }
+                setOnClickListener {
+                    selectedStyle = style
+                    styleLabel.text = style.uppercase(Locale.ROOT)
 
-            button.setOnClickListener {
-                selectedStyle = style
-                modeLabel.text =
-                    "${if (videoMode) "VIDEO" else "PHOTO"}  •  $style"
+                    for (i in 0 until styleRow.childCount) {
+                        val child = styleRow.getChildAt(i)
+                        if (child is TextView) {
+                            child.background =
+                                android.graphics.drawable.GradientDrawable().apply {
+                                    setColor(
+                                        if (child.text == style) {
+                                            Color.rgb(75, 75, 78)
+                                        } else {
+                                            Color.rgb(32, 32, 34)
+                                        }
+                                    )
+                                    cornerRadius = dp(18).toFloat()
+                                }
+                        }
+                    }
 
-                Toast.makeText(
-                    this,
-                    "$style выбран. Обработку изображения добавим следующим этапом.",
-                    Toast.LENGTH_SHORT
-                ).show()
-
-                for (i in 0 until styleRow.childCount) {
-                    val child = styleRow.getChildAt(i) as Button
-                    child.setBackgroundTintList(
-                        android.content.res.ColorStateList.valueOf(
-                            if (child.text == style) {
-                                Color.rgb(85, 85, 85)
-                            } else {
-                                Color.rgb(45, 45, 45)
-                            }
-                        )
-                    )
+                    Toast.makeText(
+                        this,
+                        "$style выбран. Реальную цветокоррекцию подключим отдельно.",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
 
             styleRow.addView(
-                button,
-                LinearLayout.LayoutParams(0, 44, 1f)
-            )
-        }
-
-        stylePanel.addView(styleRow)
-        root.addView(stylePanel)
-
-        zoomBar = SeekBar(this).apply {
-            max = 100
-            progress = 0
-            setPadding(24, 0, 24, 0)
-            setOnSeekBarChangeListener(
-                object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(
-                        seekBar: SeekBar?,
-                        progress: Int,
-                        fromUser: Boolean
-                    ) {
-                        if (fromUser) {
-                            val zoom = 1f + progress / 25f
-                            camera?.cameraControl?.setZoomRatio(zoom)
-                            zoomLabel.text = String.format(
-                                java.util.Locale.US,
-                                "%.1f×",
-                                zoom
-                            )
-                        }
-                    }
-
-                    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-                    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                chip,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    dp(36)
+                ).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
                 }
             )
         }
 
+        styleScroll.addView(styleRow)
         root.addView(
-            zoomBar,
+            styleScroll,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                36
+                dp(46)
             )
         )
 
-        val modeRow = LinearLayout(this).apply {
+        // Photo/video selector
+        val modeBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(16, 0, 16, 0)
+            setPadding(0, dp(4), 0, dp(2))
         }
 
-        val photoModeButton = makeButton("ФОТО")
-        val videoModeButton = makeButton("ВИДЕО")
+        modePhoto = label("ФОТО", 13f)
+        modeVideo = label("ВИДЕО", 13f)
 
-        photoModeButton.setOnClickListener {
+        fun updateModeAppearance() {
+            modePhoto.alpha = if (!videoMode) 1f else 0.55f
+            modeVideo.alpha = if (videoMode) 1f else 0.55f
+        }
+
+        modePhoto.setOnClickListener {
+            videoMode = false
+            updateModeAppearance()
+        }
+
+        modeVideo.setOnClickListener {
+            videoMode = true
+            updateModeAppearance()
+            Toast.makeText(
+                this,
+                "Видеозапись подключим следующим этапом",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        modeBar.addView(
+            modePhoto,
+            LinearLayout.LayoutParams(dp(90), dp(32))
+        )
+        modeBar.addView(
+            modeVideo,
+            LinearLayout.LayoutParams(dp(90), dp(32))
+        )
+        root.addView(modeBar)
+
+        // Bottom camera controls
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(3), dp(18), dp(8))
+        }
+
+        val gallery = label("▧", 25f).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.rgb(32, 32, 34))
+                cornerRadius = dp(12).toFloat()
+            }
+            setOnClickListener {
+                try {
+                    startActivity(
+                        android.content.Intent(
+                            android.content.Intent.ACTION_VIEW
+                        ).apply {
+                            setDataAndType(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                                "image/*"
+                            )
+                        }
+                    )
+                } catch (_: Exception) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Не удалось открыть галерею",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+
+        bottom.addView(
+            gallery,
+            LinearLayout.LayoutParams(dp(48), dp(48))
+        )
+
+        val shutterArea = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+        }
+
+        shutter = label("●", 44f, Color.BLACK).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE)
+                setShape(android.graphics.drawable.GradientDrawable.OVAL)
+                setStroke(dp(4), Color.rgb(180, 180, 180))
+            }
+            setOnClickListener {
+                if (videoMode) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Видеозапись появится в следующем обновлении",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    takePhoto()
+                }
+            }
+        }
+
+        shutterArea.addView(
+            shutter,
+            LinearLayout.LayoutParams(dp(68), dp(68))
+        )
+
+        bottom.addView(
+            shutterArea,
+            LinearLayout.LayoutParams(0, dp(72), 1f)
+        )
+
+        val switch = label("⇄", 28f).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.rgb(32, 32, 34))
+                cornerRadius = dp(24).toFloat()
+            }
+            setOnClickListener {
+                frontCamera = !frontCamera
+                startCamera()
+            }
+        }
+
+        bottom.addView(
+            switch,
+            LinearLayout.LayoutParams(dp(48), dp(48))
+        )
+
+        root.addView(bottom)
+
+        setContentView(root)
+    }
+
+    private fun setZoom(zoom: Float) {
+        val state = camera?.cameraInfo?.zoomState?.value
+        if (state == null) {
+            Toast.makeText(
+                this,
+                "Камера ещё запускается",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        currentZoom = zoom.coerceIn(
+            state.minZoomRatio,
+            state.maxZoomRatio
+        )
+        camera?.cameraControl?.setZoomRatio(currentZoom)
+    }
+
+    private fun startCamera() {
+        val future = ProcessCameraProvider.getInstance(this)
+
+        future.addListener({
+            val provider = future.get()
+
+            val selector = if (frontCamera) {
+                CameraSelector.DEFAULT_FRONT_CAMERA
+            } else {
+                CameraSelector.DEFAULT_BACK_CAMERA
+            }
+
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(previewView.surfaceProvider)
+            }
+
+            imageCapture = ImageCapture.Builder()
+                .setFlashMode(
+                    if (flashEnabled) ImageCapture.FLASH_MODE_ON
+                    else ImageCapture.FLASH_MODE_OFF
+                )
+                .build()
+
+            try {
+                provider.unbindAll()
+                camera = provider.bindToLifecycle(
+                    this,
+                    selector,
+                    preview,
+                    imageCapture
+                )
+
+                currentZoom = 1f
+                camera?.cameraControl?.setZoomRatio(1f)
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this,
+                    "Не удалось запустить камеру: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun takePhoto() {
+        val capture = imageCapture ?: run {
+            Toast.makeText(
+                this,
+                "Камера ещё запускается",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        val values = ContentValues().apply {
+            put(
+                MediaStore.Images.Media.DISPLAY_NAME,
+                "CineCam_${System.currentTimeMillis()}.jpg"
+            )
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(
+                MediaStore.Images.Media.RELATIVE_PATH,
+                "Pictures/CineCam13"
+            )
+        }
+
+        val options = ImageCapture.OutputFileOptions.Builder(
+            contentResolver,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            values
+        ).build()
+
+        capture.takePicture(
+            options,
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(
+                    output: ImageCapture.OutputFileResults
+                ) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Фото сохранено",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+
+                override fun onError(
+                    exception: ImageCaptureException
+                ) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Ошибка фото: ${exception.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        )
+    }
+}    photoModeButton.setOnClickListener {
             videoMode = false
             modeLabel.text = "PHOTO  •  $selectedStyle"
             Toast.makeText(
