@@ -207,7 +207,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        listOf(1f, 1.5f, 2f, 3f).forEach { factor ->
+        listOf(0.6f, 1f, 1.5f, 2f, 3f).forEach { factor ->
 
             val button = text(
                 "${factor}×",
