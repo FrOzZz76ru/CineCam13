@@ -44,8 +44,9 @@ class MainActivity : ComponentActivity() {
     private val backgroundColor = Color.rgb(0, 0, 0)
     private val white = Color.rgb(255, 255, 255)
     private val secondary = Color.rgb(165, 165, 170)
-    private val selectedBackground = Color.rgb(65, 65, 68)
+    private val selectedBackground = Color.rgb(35, 32, 27)
     private val glass = Color.argb(175, 25, 25, 28)
+    private val gold = Color.rgb(225, 184, 120)
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -82,14 +83,17 @@ class MainActivity : ComponentActivity() {
             cornerRadius = dp(radius).toFloat()
         }
 
-    private fun circle(color: Int, strokeColor: Int? = null, strokeWidth: Int = 0) =
-        GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(color)
-            if (strokeColor != null) {
-                setStroke(dp(strokeWidth), strokeColor)
-            }
+    private fun circle(
+        color: Int,
+        strokeColor: Int? = null,
+        strokeWidth: Int = 0
+    ) = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(color)
+        if (strokeColor != null) {
+            setStroke(dp(strokeWidth), strokeColor)
         }
+    }
 
     private fun label(
         value: String,
@@ -112,7 +116,7 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(12), dp(5), dp(12), dp(7))
         }
 
-        // Компактная верхняя панель
+        // Верхняя панель
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -135,7 +139,7 @@ class MainActivity : ComponentActivity() {
         header.addView(settings, LinearLayout.LayoutParams(dp(42), dp(38)))
         root.addView(header)
 
-        // Большой предпросмотр камеры
+        // Предпросмотр камеры
         val previewFrame = FrameLayout(this).apply {
             background = rounded(Color.rgb(13, 13, 15), 22)
             clipToOutline = true
@@ -152,7 +156,6 @@ class MainActivity : ComponentActivity() {
             FrameLayout.LayoutParams(-1, -1)
         )
 
-        // Маленький индикатор камеры
         cameraLabel = label("●  ОСНОВНАЯ", 10f, white, true).apply {
             background = rounded(Color.argb(155, 0, 0, 0), 18)
             setPadding(dp(11), dp(8), dp(11), dp(8))
@@ -165,21 +168,24 @@ class MainActivity : ComponentActivity() {
             }
         )
 
-        // Зум поверх изображения, ближе к нижнему краю
-        val zoomOverlay = LinearLayout(this).apply {
+        // Компактный зум поверх изображения
+        zoomRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            background = rounded(Color.argb(180, 0, 0, 0), 25)
-            setPadding(dp(5), dp(5), dp(5), dp(5))
+            background = rounded(Color.TRANSPARENT, 20)
+            setPadding(0, 0, 0, 0)
         }
 
-        zoomRow = zoomOverlay
         renderZoomButtons()
 
         previewFrame.addView(
-            zoomOverlay,
-            FrameLayout.LayoutParams(-1, dp(47), Gravity.BOTTOM).apply {
-                setMargins(dp(22), 0, dp(22), dp(14))
+            zoomRow,
+            FrameLayout.LayoutParams(
+                -1,
+                dp(40),
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            ).apply {
+                setMargins(0, 0, 0, dp(10))
             }
         )
 
@@ -190,7 +196,7 @@ class MainActivity : ComponentActivity() {
             }
         )
 
-        // Переключатель режимов в стиле штатной камеры
+        // Режимы съёмки
         modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -207,7 +213,7 @@ class MainActivity : ComponentActivity() {
             }
         )
 
-        // Нижняя панель: галерея, затвор, переключение камеры
+        // Нижняя панель управления
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -216,8 +222,8 @@ class MainActivity : ComponentActivity() {
 
         galleryButton = label("▧", 27f, white).apply {
             background = rounded(glass, 19)
-            setOnClickListener { openGallery() }
             contentDescription = "Открыть галерею"
+            setOnClickListener { openGallery() }
         }
 
         shutterOuter = FrameLayout(this).apply {
@@ -287,38 +293,71 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
     }
 
+    // Компактные круглые кнопки зума с золотистым ободком
     private fun renderZoomButtons() {
         zoomRow.removeAllViews()
 
         val presets = if (frontCamera) {
-            listOf(1f, 1.5f, 2f, 3f)
+            listOf(1f, 1.2f, 1.5f, 2f, 2.5f, 3f)
         } else {
-            listOf(0.6f, 1f, 1.5f, 2f, 3f)
+            listOf(0.6f, 0.7f, 0.8f, 1f, 1.2f, 1.5f, 2f, 2.5f, 3f)
         }
 
         presets.forEach { value ->
-            val isSelected = kotlin.math.abs(zoom - value) < 0.01f
+            val selected = kotlin.math.abs(zoom - value) < 0.01f
 
             val title = when (value) {
                 0.6f -> "0.6"
+                0.7f -> "0.7"
+                0.8f -> "0.8"
                 1f -> "1×"
+                1.2f -> "1.2"
                 1.5f -> "1.5"
                 2f -> "2"
+                2.5f -> "2.5"
                 3f -> "3"
                 else -> value.toString()
             }
 
             val button = label(
                 title,
-                if (isSelected) 12f else 11f,
-                if (isSelected) white else secondary,
-                isSelected
+                if (selected) 11f else 10f,
+                if (selected) gold else white,
+                selected
             ).apply {
-                background = rounded(
-                    if (isSelected) selectedBackground else Color.TRANSPARENT,
-                    22
-                )
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(
+                        if (selected) selectedBackground
+                        else Color.argb(70, 30, 30, 33)
+                    )
+
+                    if (selected) {
+                        setStroke(dp(1), gold)
+                    }
+                }
+
+                elevation = dp(if (selected) 2 else 0).toFloat()
+
                 setOnClickListener {
+                    val state = camera?.cameraInfo?.zoomState?.value
+
+                    if (state == null) {
+                        toast("Камера ещё запускается")
+                        return@setOnClickListener
+                    }
+
+                    if (value < state.minZoomRatio ||
+                        value > state.maxZoomRatio
+                    ) {
+                        if (!frontCamera && value == 0.6f) {
+                            toast("Для 0.6× нужен механизм ультраширокой камеры")
+                        } else {
+                            toast("Зум ${title} недоступен на этой камере")
+                        }
+                        return@setOnClickListener
+                    }
+
                     zoom = value
                     applyZoom(value)
                     renderZoomButtons()
@@ -327,11 +366,18 @@ class MainActivity : ComponentActivity() {
 
             zoomRow.addView(
                 button,
-                LinearLayout.LayoutParams(0, -1, 1f).apply {
+                LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                    marginStart = dp(2)
                     marginEnd = dp(2)
                 }
             )
         }
+
+        zoomRow.background = GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+        }
+        zoomRow.setPadding(0, 0, 0, 0)
+        zoomRow.gravity = Gravity.CENTER
     }
 
     private fun renderModes() {
@@ -390,6 +436,7 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             try {
                 val provider = future.get()
+
                 val selector = if (frontCamera) {
                     CameraSelector.DEFAULT_FRONT_CAMERA
                 } else {
@@ -422,7 +469,18 @@ class MainActivity : ComponentActivity() {
 
                 updateCameraLabel()
                 renderZoomButtons()
-                applyZoom(zoom)
+
+                val state = camera?.cameraInfo?.zoomState?.value
+                if (state != null &&
+                    zoom >= state.minZoomRatio &&
+                    zoom <= state.maxZoomRatio
+                ) {
+                    applyZoom(zoom)
+                } else {
+                    zoom = 1f
+                    applyZoom(zoom)
+                    renderZoomButtons()
+                }
 
             } catch (e: Exception) {
                 toast("Ошибка запуска камеры: ${e.message ?: "неизвестная ошибка"}")
@@ -435,11 +493,7 @@ class MainActivity : ComponentActivity() {
         val state = activeCamera.cameraInfo.zoomState.value ?: return
 
         if (value < state.minZoomRatio || value > state.maxZoomRatio) {
-            if (!frontCamera && value == 0.6f) {
-                toast("Для 0.6× нужен переключатель ультраширокого объектива")
-            } else {
-                toast("Этот зум недоступен")
-            }
+            toast("Этот уровень зума недоступен")
             return
         }
 
