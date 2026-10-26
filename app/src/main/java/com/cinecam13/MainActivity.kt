@@ -670,21 +670,36 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun LutProcessor.Style.displayName(): String {
-        return when (this) {
-            LutProcessor.Style.NAT -> "Natural"
-            LutProcessor.Style.KODACHROME_64 -> "Kodachrome 64"
-            LutProcessor.Style.PORTRA_400 -> "Portra 400"
-            LutProcessor.Style.PORTRA_800 -> "Portra 800"
-            LutProcessor.Style.FUJI_FILM -> "Fuji Film"
-            LutProcessor.Style.FUJI_PORTRAIT -> "Fuji Portrait"
-            LutProcessor.Style.CINE -> "Cinematic"
-            LutProcessor.Style.TEAL_ORANGE -> "Teal & Orange"
-            LutProcessor.Style.MOODY_AQUA -> "Moody Aqua"
-            LutProcessor.Style.WARM -> "Warm"
-            LutProcessor.Style.COOL -> "Cool"
-        }
-    }
+    private fun LutProcessor.Style.displayName(): String {
+    return when (this) {
+        LutProcessor.Style.NAT -> "Natural"
+        LutProcessor.Style.KODACHROME_64 -> "Kodachrome 64"
+        LutProcessor.Style.PORTRA_400 -> "Portra 400"
+        LutProcessor.Style.PORTRA_800 -> "Portra 800"
+        LutProcessor.Style.FUJI_FILM -> "Fuji Film"
+        LutProcessor.Style.FUJI_PORTRAIT -> "Fuji Portrait"
+        LutProcessor.Style.CINE -> "Cinematic"
+        LutProcessor.Style.TEAL_ORANGE -> "Teal & Orange"
+        LutProcessor.Style.MOODY_AQUA -> "Moody Aqua"
+        LutProcessor.Style.WARM -> "Warm"
+        LutProcessor.Style.COOL -> "Cool"
 
+        LutProcessor.Style.PORTRA_160 -> "Portra 160"
+        LutProcessor.Style.KODAK_GOLD_200 -> "Kodak Gold 200"
+        LutProcessor.Style.KODAK_EKTAR_100 -> "Kodak Ektar 100"
+        LutProcessor.Style.FUJI_PRO_400H -> "Fuji Pro 400H"
+        LutProcessor.Style.FUJI_VELVIA -> "Fuji Velvia"
+        LutProcessor.Style.CINEMATIC_TEAL -> "Cinematic Teal"
+        LutProcessor.Style.BLEACH_BYPASS -> "Bleach Bypass"
+        LutProcessor.Style.VINTAGE_FILM -> "Vintage Film"
+        LutProcessor.Style.MATTE_FILM -> "Matte Film"
+        LutProcessor.Style.BLACK_AND_WHITE -> "Black & White"
+        LutProcessor.Style.NOIR -> "Noir"
+        LutProcessor.Style.GOLDEN_HOUR -> "Golden Hour"
+        LutProcessor.Style.NIGHT_CINEMA -> "Night Cinema"
+        LutProcessor.Style.ARCTIC_BLUE -> "Arctic Blue"
+    }
+    }
     // ---------------------------------------------------------
     // CAMERA
     // ---------------------------------------------------------
