@@ -37,6 +37,10 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import androidx.exifinterface.media.ExifInterface
 
 class MainActivity : ComponentActivity() {
 
@@ -791,13 +795,179 @@ class MainActivity : ComponentActivity() {
                         outputFile.delete()
 
                         runOnUiThread {
-                            toast("Фото с профилем $currentStyle сохранено")
+private fun takePhoto() {
+    val capture = imageCapture
+
+    if (capture == null) {
+        toast("Камера ещё запускается")
+        return
+    }
+
+    val outputFile = java.io.File(
+        cacheDir,
+        "cinecam_temp_${System.currentTimeMillis()}.jpg"
+    )
+
+    val options = ImageCapture.OutputFileOptions.Builder(outputFile).build()
+
+    shutterOuter.animate()
+        .scaleX(0.93f)
+        .scaleY(0.93f)
+        .setDuration(80)
+        .withEndAction {
+            shutterOuter.animate()
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(100)
+                .start()
+        }
+        .start()
+
+    capture.takePicture(
+        options,
+        ContextCompat.getMainExecutor(this),
+        object : ImageCapture.OnImageSavedCallback {
+
+            override fun onImageSaved(
+                output: ImageCapture.OutputFileResults
+            ) {
+                val selectedStyle = currentStyle
+
+                Thread {
+                    var original: Bitmap? = null
+                    var oriented: Bitmap? = null
+                    var filtered: Bitmap? = null
+                    var savedUri: android.net.Uri? = null
+
+                    try {
+                        original = BitmapFactory.decodeFile(
+                            outputFile.absolutePath
+                        ) ?: throw Exception("Не удалось прочитать снимок")
+
+                        val exif = ExifInterface(outputFile.absolutePath)
+
+                        val orientation = exif.getAttributeInt(
+                            ExifInterface.TAG_ORIENTATION,
+                            ExifInterface.ORIENTATION_NORMAL
+                        )
+
+                        val matrix = Matrix()
+
+                        when (orientation) {
+                            ExifInterface.ORIENTATION_ROTATE_90 ->
+                                matrix.postRotate(90f)
+
+                            ExifInterface.ORIENTATION_ROTATE_180 ->
+                                matrix.postRotate(180f)
+
+                            ExifInterface.ORIENTATION_ROTATE_270 ->
+                                matrix.postRotate(270f)
+
+                            ExifInterface.ORIENTATION_FLIP_HORIZONTAL ->
+                                matrix.preScale(-1f, 1f)
+
+                            ExifInterface.ORIENTATION_FLIP_VERTICAL ->
+                                matrix.preScale(1f, -1f)
+
+                            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                                matrix.postRotate(90f)
+                                matrix.postScale(-1f, 1f)
+                            }
+
+                            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                                matrix.postRotate(270f)
+                                matrix.postScale(-1f, 1f)
+                            }
                         }
+
+                        oriented = if (matrix.isIdentity) {
+                            original
+                        } else {
+                            Bitmap.createBitmap(
+                                original,
+                                0,
+                                0,
+                                original.width,
+                                original.height,
+                                matrix,
+                                true
+                            )
+                        }
+
+                        val style = when (selectedStyle) {
+                            "CINEMA" -> LutProcessor.Style.CINE
+                            "TEAL" -> LutProcessor.Style.TEAL_ORANGE
+                            "WARM" -> LutProcessor.Style.WARM
+                            "COOL" -> LutProcessor.Style.COOL
+                            else -> LutProcessor.Style.NAT
+                        }
+
+                        filtered = if (style == LutProcessor.Style.NAT) {
+                            oriented
+                        } else {
+                            LutProcessor.apply(
+                                oriented!!,
+                                LutProcessor.createStyle(style)
+                            )
+                        }
+
+                        val finalValues = ContentValues().apply {
+                            put(
+                                MediaStore.Images.Media.DISPLAY_NAME,
+                                "CineCam_${System.currentTimeMillis()}.jpg"
+                            )
+                            put(
+                                MediaStore.Images.Media.MIME_TYPE,
+                                "image/jpeg"
+                            )
+                            put(
+                                MediaStore.Images.Media.RELATIVE_PATH,
+                                "Pictures/CineCam13"
+                            )
+                        }
+
+                        val uri = contentResolver.insert(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                            finalValues
+                        ) ?: throw Exception("Не удалось создать файл фото")
+
+                        savedUri = uri
+
+                        contentResolver.openOutputStream(uri)?.use { stream ->
+                            if (!filtered!!.compress(
+                                    Bitmap.CompressFormat.JPEG,
+                                    95,
+                                    stream
+                                )
+                            ) {
+                                throw Exception("Не удалось сохранить фото")
+                            }
+                        } ?: throw Exception("Не удалось открыть файл фото")
+
+                        runOnUiThread {
+                            toast("Фото с профилем $selectedStyle сохранено")
+                        }
+
                     } catch (e: Exception) {
-                        outputFile.delete()
+                        savedUri?.let {
+                            contentResolver.delete(it, null, null)
+                        }
+
                         runOnUiThread {
                             toast("Ошибка обработки фото: ${e.message}")
                         }
+
+                    } finally {
+                        if (filtered != null && filtered !== oriented) {
+                            filtered?.recycle()
+                        }
+
+                        if (oriented != null && oriented !== original) {
+                            oriented?.recycle()
+                        }
+
+                        original?.recycle()
+                        outputFile.delete()
                     }
                 }.start()
             }
