@@ -676,55 +676,139 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun takePhoto() {
-        val capture = imageCapture
-        if (capture == null) {
-            toast("Камера ещё запускается")
-            return
-        }
+    val capture = imageCapture
+    if (capture == null) {
+        toast("Камера ещё запускается")
+        return
+    }
 
-        val values = ContentValues().apply {
-            put(
-                MediaStore.Images.Media.DISPLAY_NAME,
-                "CineCam_${System.currentTimeMillis()}.jpg"
-            )
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CineCam13")
-        }
-
-        val options = ImageCapture.OutputFileOptions.Builder(
-            contentResolver,
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            values
-        ).build()
-
-        shutterOuter.animate()
-            .scaleX(0.93f)
-            .scaleY(0.93f)
-            .setDuration(80)
-            .withEndAction {
-                shutterOuter.animate()
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setDuration(100)
-                    .start()
-            }
-            .start()
-
-        capture.takePicture(
-            options,
-            ContextCompat.getMainExecutor(this),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    toast("Снимок сохранён в Pictures/CineCam13")
-                }
-
-                override fun onError(exception: ImageCaptureException) {
-                    toast("Ошибка фото: ${exception.message}")
-                }
-            }
+    val values = ContentValues().apply {
+        put(
+            MediaStore.Images.Media.DISPLAY_NAME,
+            "CineCam_${System.currentTimeMillis()}.jpg"
+        )
+        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+        put(
+            MediaStore.Images.Media.RELATIVE_PATH,
+            "Pictures/CineCam13"
         )
     }
 
+    val outputFile = java.io.File(
+        cacheDir,
+        "cinecam_temp_${System.currentTimeMillis()}.jpg"
+    )
+
+    val options = ImageCapture.OutputFileOptions.Builder(outputFile).build()
+
+    shutterOuter.animate()
+        .scaleX(0.93f)
+        .scaleY(0.93f)
+        .setDuration(80)
+        .withEndAction {
+            shutterOuter.animate()
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(100)
+                .start()
+        }
+        .start()
+
+    capture.takePicture(
+        options,
+        ContextCompat.getMainExecutor(this),
+        object : ImageCapture.OnImageSavedCallback {
+
+            override fun onImageSaved(
+                output: ImageCapture.OutputFileResults
+            ) {
+                Thread {
+                    try {
+                        val original = android.graphics.BitmapFactory
+                            .decodeFile(outputFile.absolutePath)
+                            ?: throw Exception("Не удалось прочитать снимок")
+
+                        val style = when (currentStyle) {
+                            "CINEMA" ->
+                                LutProcessor.Style.CINE
+                            "TEAL" ->
+                                LutProcessor.Style.TEAL_ORANGE
+                            "WARM" ->
+                                LutProcessor.Style.WARM
+                            "COOL" ->
+                                LutProcessor.Style.COOL
+                            else ->
+                                LutProcessor.Style.NAT
+                        }
+
+                        val filtered = if (style == LutProcessor.Style.NAT) {
+                            original
+                        } else {
+                            LutProcessor.apply(
+                                original,
+                                LutProcessor.createStyle(style)
+                            )
+                        }
+
+                        val finalValues = ContentValues().apply {
+                            put(
+                                MediaStore.Images.Media.DISPLAY_NAME,
+                                "CineCam_${System.currentTimeMillis()}.jpg"
+                            )
+                            put(
+                                MediaStore.Images.Media.MIME_TYPE,
+                                "image/jpeg"
+                            )
+                            put(
+                                MediaStore.Images.Media.RELATIVE_PATH,
+                                "Pictures/CineCam13"
+                            )
+                        }
+
+                        val uri = contentResolver.insert(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                            finalValues
+                        ) ?: throw Exception("Не удалось создать файл фото")
+
+                        try {
+                            contentResolver.openOutputStream(uri)?.use { stream ->
+                                if (!filtered.compress(
+                                        android.graphics.Bitmap.CompressFormat.JPEG,
+                                        95,
+                                        stream
+                                    )
+                                ) {
+                                    throw Exception("Не удалось сохранить фото")
+                                }
+                            } ?: throw Exception("Не удалось открыть файл фото")
+                        } catch (e: Exception) {
+                            contentResolver.delete(uri, null, null)
+                            throw e
+                        }
+
+                        if (filtered !== original) filtered.recycle()
+                        original.recycle()
+                        outputFile.delete()
+
+                        runOnUiThread {
+                            toast("Фото с профилем $currentStyle сохранено")
+                        }
+                    } catch (e: Exception) {
+                        outputFile.delete()
+                        runOnUiThread {
+                            toast("Ошибка обработки фото: ${e.message}")
+                        }
+                    }
+                }.start()
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                outputFile.delete()
+                toast("Ошибка фото: ${exception.message}")
+            }
+        }
+    )
+}
     private fun openGallery() {
         try {
             val intent = android.content.Intent(
