@@ -6,6 +6,7 @@ import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
 import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
 
 object LutProcessor {
@@ -78,6 +79,8 @@ object LutProcessor {
 
     fun apply(source: Bitmap, lut: CubeLut): Bitmap {
         require(!source.isRecycled)
+        require(lut.size >= 2)
+        require(lut.values.size == lut.size * lut.size * lut.size * 3)
 
         val width = source.width
         val height = source.height
@@ -140,7 +143,7 @@ object LutProcessor {
             return table[((iz * n + iy) * n + ix) * 3 + c]
         }
 
-        fun mix(a: Float, b: Float, t: Float) =
+        fun mix(a: Float, b: Float, t: Float): Float =
             a + (b - a) * t
 
         val result = FloatArray(3)
@@ -216,44 +219,73 @@ object LutProcessor {
         b0: Float,
         style: Style
     ): FloatArray {
+        if (style == Style.NAT) {
+            return floatArrayOf(r0, g0, b0)
+        }
+
         var r = r0
         var g = g0
         var b = b0
+
+        val luma = 0.2126f * r0 + 0.7152f * g0 + 0.0722f * b0
 
         when (style) {
             Style.NAT -> Unit
 
             Style.CINE -> {
-                r = (r - 0.48f) * 1.08f + 0.48f
-                g = (g - 0.48f) * 1.04f + 0.48f
-                b = (b - 0.48f) * 1.02f + 0.48f
-                r *= 1.035f
-                g *= 0.995f
-                b *= 0.965f
+                // Больше контраста, прохладные тени и тёплые света.
+                r = (r0 - 0.45f) * 1.18f + 0.45f
+                g = (g0 - 0.45f) * 1.13f + 0.45f
+                b = (b0 - 0.45f) * 1.10f + 0.45f
+
+                val shadows = (1f - luma).coerceIn(0f, 1f)
+                val highlights = luma.coerceIn(0f, 1f)
+
+                r += highlights * 0.035f
+                g += highlights * 0.008f
+                b -= highlights * 0.025f
+
+                g += shadows * 0.012f
+                b += shadows * 0.035f
             }
 
             Style.TEAL_ORANGE -> {
-                val luma = 0.2126f * r + 0.7152f * g + 0.0722f * b
-                r = r * 1.06f + luma * 0.035f
-                g = g * 0.99f + (1f - luma) * 0.015f
-                b = b * 1.04f + (1f - luma) * 0.035f
-                r += maxOf(0f, luma - 0.45f) * 0.09f
-                b += maxOf(0f, 0.55f - luma) * 0.07f
+                // Бирюзовые тени, тёплые светлые участки.
+                val shadows = (1f - luma).coerceIn(0f, 1f)
+                val highlights = luma.coerceIn(0f, 1f)
+
+                r = r0 * 1.08f + highlights * 0.075f
+                g = g0 * 1.01f + shadows * 0.025f
+                b = b0 * 1.08f + shadows * 0.085f
+
+                r -= shadows * 0.025f
+                g += highlights * 0.012f
+                b -= highlights * 0.055f
             }
 
             Style.WARM -> {
-                r *= 1.08f
-                g *= 1.015f
-                b *= 0.92f
+                // Выраженное тёплое, золотистое тонирование.
+                r = r0 * 1.13f + 0.025f
+                g = g0 * 1.035f + 0.008f
+                b = b0 * 0.84f - 0.008f
+
+                r = (r - 0.45f) * 1.04f + 0.45f
             }
 
             Style.COOL -> {
-                r *= 0.93f
-                g *= 1.005f
-                b *= 1.09f
+                // Холодные сине-голубые оттенки.
+                r = r0 * 0.86f - 0.008f
+                g = g0 * 1.015f
+                b = b0 * 1.15f + 0.025f
+
+                b = (b - 0.45f) * 1.035f + 0.45f
             }
         }
 
-        return floatArrayOf(r, g, b)
+        return floatArrayOf(
+            r.coerceIn(0f, 1f),
+            g.coerceIn(0f, 1f),
+            b.coerceIn(0f, 1f)
+        )
     }
 }
