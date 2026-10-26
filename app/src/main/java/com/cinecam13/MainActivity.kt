@@ -421,7 +421,7 @@ class MainActivity : ComponentActivity() {
                             "TEAL" -> "Профиль Teal & Orange выбран"
                             "WARM" -> "Профиль Warm Film выбран"
                             else -> "Профиль Cool Film выбран"
-                        } + ". LUT-обработка ещё не подключена"
+                        } + ". Применится к следующему фото"
                     )
                 }
             }
