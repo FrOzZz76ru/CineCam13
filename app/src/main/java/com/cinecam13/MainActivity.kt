@@ -2,10 +2,15 @@ package com.cinecam13
 
 import android.Manifest
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.Typeface
+import android.graphics.Matrix
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.Gravity
@@ -24,23 +29,22 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.MediaStoreOutputOptions
-import androidx.camera.video.PendingRecording
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
+import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.exifinterface.media.ExifInterface
+import java.io.File
 import java.util.Locale
-import kotlin.math.abs
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
-import androidx.exifinterface.media.ExifInterface
 
 class MainActivity : ComponentActivity() {
 
@@ -67,6 +71,12 @@ class MainActivity : ComponentActivity() {
     private var currentStyle = "NATURAL"
     private var recordingStartedAt = 0L
 
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var cameraStarting = false
+
+    private val photoExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor()
+
     private val backgroundColor = Color.BLACK
     private val white = Color.WHITE
     private val secondary = Color.rgb(160, 160, 165)
@@ -75,27 +85,37 @@ class MainActivity : ComponentActivity() {
     private val glass = Color.argb(190, 24, 24, 27)
 
     private val cameraPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startCamera()
-            else toast("Разреши доступ к камере")
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) {
+                startCamera()
+            } else {
+                toast("Разреши доступ к камере")
+            }
         }
 
     private val audioPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startVideoRecording(withAudio = true)
-            else startVideoRecording(withAudio = false)
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            startVideoRecording(withAudio = granted)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = backgroundColor
-        window.navigationBarColor = backgroundColor
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
+        window.statusBarColor = Color.BLACK
+        window.navigationBarColor = Color.BLACK
 
         buildInterface()
 
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.CAMERA
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
             ) == PackageManager.PERMISSION_GRANTED
         ) {
             startCamera()
@@ -105,279 +125,309 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density + 0.5f).toInt()
+        (value * resources.displayMetrics.density).toInt()
 
-    private fun rounded(color: Int, radius: Int): GradientDrawable =
-        GradientDrawable().apply {
+    private fun rounded(
+        color: Int,
+        radius: Int
+    ): GradientDrawable {
+        return GradientDrawable().apply {
             setColor(color)
             cornerRadius = dp(radius).toFloat()
         }
+    }
 
-    private fun circle(
-        color: Int,
-        strokeColor: Int? = null,
-        strokeWidth: Int = 0
-    ) = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(color)
-        if (strokeColor != null) setStroke(dp(strokeWidth), strokeColor)
+    private fun circle(color: Int): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
     }
 
     private fun label(
-        value: String,
+        text: String,
         size: Float,
-        color: Int,
-        bold: Boolean = false
-    ) = TextView(this).apply {
-        text = value
-        textSize = size
-        setTextColor(color)
-        gravity = Gravity.CENTER
-        includeFontPadding = false
-        if (bold) setTypeface(typeface, Typeface.BOLD)
+        color: Int = white
+    ): TextView {
+        return TextView(this).apply {
+            this.text = text
+            textSize = size
+            setTextColor(color)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+        }
     }
 
     private fun buildInterface() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(backgroundColor)
-            setPadding(dp(12), dp(5), dp(12), dp(7))
+            setPadding(dp(16), dp(8), dp(16), dp(10))
         }
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(5), dp(5), dp(5), dp(8))
+        }
+
+        val title = label("CineCam", 25f, white).apply {
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val version = label("13", 22f, gold).apply {
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(5), 0, 0, 0)
         }
 
         header.addView(
-            label("CineCam 13", 19f, white, true).apply {
-                gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
+            title,
+            LinearLayout.LayoutParams(-2, dp(52))
+        )
+        header.addView(
+            version,
+            LinearLayout.LayoutParams(-2, dp(52))
         )
 
-        header.addView(
-            label("···", 26f, white, true).apply {
-                background = rounded(glass, 22)
-                setOnClickListener {
-                    toast("Кинематографические профили доступны ниже")
-                }
-            },
-            LinearLayout.LayoutParams(dp(42), dp(36))
+        root.addView(
+            header,
+            LinearLayout.LayoutParams(-1, dp(52))
         )
-        root.addView(header)
 
         val previewFrame = FrameLayout(this).apply {
-            background = rounded(Color.rgb(13, 13, 15), 22)
+            background = rounded(Color.rgb(15, 15, 17), 20)
             clipToOutline = true
         }
 
         previewView = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
-            setBackgroundColor(Color.rgb(13, 13, 15))
         }
 
-        previewFrame.addView(previewView, FrameLayout.LayoutParams(-1, -1))
+        previewFrame.addView(
+            previewView,
+            FrameLayout.LayoutParams(-1, -1)
+        )
 
-        cameraLabel = label("●  ОСНОВНАЯ", 10f, white, true).apply {
-            background = rounded(Color.argb(155, 0, 0, 0), 18)
-            setPadding(dp(10), dp(7), dp(10), dp(7))
+        cameraLabel = label("КАМЕРА", 11f, white).apply {
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = rounded(glass, 20)
         }
 
         previewFrame.addView(
             cameraLabel,
-            FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
-                setMargins(dp(10), dp(10), 0, 0)
+            FrameLayout.LayoutParams(-2, -2).apply {
+                gravity = Gravity.TOP or Gravity.START
+                setMargins(dp(12), dp(12), 0, 0)
             }
         )
 
-        recordLabel = label("●  REC 00:00", 11f, Color.RED, true).apply {
-            background = rounded(Color.argb(175, 0, 0, 0), 16)
-            setPadding(dp(10), dp(7), dp(10), dp(7))
+        recordLabel = label("● REC 00:00", 14f, Color.RED).apply {
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            background = rounded(glass, 18)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
             visibility = View.GONE
         }
 
         previewFrame.addView(
             recordLabel,
-            FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
-                setMargins(0, dp(10), dp(10), 0)
-            }
-        )
-
-        // Компактная полоса зума. Свайп влево/вправо меняет увеличение.
-        zoomRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = rounded(Color.argb(145, 0, 0, 0), 18)
-            setPadding(dp(9), dp(5), dp(9), dp(5))
-        }
-
-        zoomValueLabel = label("1.0×", 11f, gold, true)
-        zoomRow.addView(
-            zoomValueLabel,
-            LinearLayout.LayoutParams(dp(43), dp(24))
-        )
-
-        val zoomTrack = View(this).apply {
-            background = rounded(Color.argb(150, 180, 180, 180), 2)
-        }
-
-        zoomRow.addView(
-            zoomTrack,
-            LinearLayout.LayoutParams(dp(105), dp(3)).apply {
-                marginStart = dp(5)
-                marginEnd = dp(3)
-            }
-        )
-
-        val zoomHint = label("↔", 13f, white, true)
-        zoomRow.addView(zoomHint, LinearLayout.LayoutParams(dp(20), dp(24)))
-
-        var downX = 0f
-        var startingZoom = 1f
-
-        zoomRow.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = event.rawX
-                    startingZoom = zoom
-                    true
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    val delta = (event.rawX - downX) / dp(100).toFloat()
-                    val state = camera?.cameraInfo?.zoomState?.value
-                    if (state != null) {
-                        val minZoom = state.minZoomRatio
-                        val maxZoom = state.maxZoomRatio
-                        val next = (startingZoom * Math.pow(2.0, delta.toDouble()).toFloat())
-                            .coerceIn(minZoom, maxZoom)
-                        zoom = next
-                        applyZoom(next)
-                        updateZoomText()
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
-                else -> false
-            }
-        }
-
-        previewFrame.addView(
-            zoomRow,
-            FrameLayout.LayoutParams(-2, dp(36), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                bottomMargin = dp(10)
+            FrameLayout.LayoutParams(-2, -2).apply {
+                gravity = Gravity.TOP or Gravity.END
+                setMargins(0, dp(12), dp(12), 0)
             }
         )
 
         root.addView(
             previewFrame,
             LinearLayout.LayoutParams(-1, 0, 1f).apply {
-                bottomMargin = dp(9)
+                topMargin = dp(8)
+                bottomMargin = dp(12)
             }
         )
 
-        // Кинематографические стили. На этом этапе это выбор профиля интерфейса;
-        // настоящий LUT-фильтр требует отдельного GPU-обработчика.
+        val zoomHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        zoomHeader.addView(
+            label("ЗУМ", 11f, secondary),
+            LinearLayout.LayoutParams(0, dp(28), 1f)
+        )
+
+        zoomValueLabel = label("1.0×", 13f, gold)
+        zoomHeader.addView(
+            zoomValueLabel,
+            LinearLayout.LayoutParams(-2, dp(28))
+        )
+
+        root.addView(
+            zoomHeader,
+            LinearLayout.LayoutParams(-1, dp(28))
+        )
+
+        zoomRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(Color.rgb(22, 22, 24), 14)
+            setPadding(dp(12), 0, dp(12), 0)
+        }
+
+        val zoomHint = label("Проведи пальцем ← →", 12f, secondary)
+        zoomRow.addView(
+            zoomHint,
+            LinearLayout.LayoutParams(-1, dp(42))
+        )
+
+        var startX = 0f
+        var startZoom = 1f
+
+        zoomRow.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.x
+                    startZoom = zoom
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val difference = event.x - startX
+                    val factor = difference / dp(180).toFloat()
+                    applyZoom(startZoom + factor * 3f)
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    zoomRow.performClick()
+                    true
+                }
+
+                else -> true
+            }
+        }
+
+        root.addView(
+            zoomRow,
+            LinearLayout.LayoutParams(-1, dp(42))
+        )
+
+        root.addView(
+            label("ЦВЕТОВОЙ ПРОФИЛЬ", 10f, secondary).apply {
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            },
+            LinearLayout.LayoutParams(-1, dp(32)).apply {
+                topMargin = dp(6)
+            }
+        )
+
         styleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(2), dp(2), dp(2), dp(2))
-            background = rounded(Color.rgb(20, 20, 22), 18)
         }
-
-        renderStyles()
 
         root.addView(
             styleRow,
-            LinearLayout.LayoutParams(-1, dp(35)).apply {
-                bottomMargin = dp(7)
-            }
+            LinearLayout.LayoutParams(-1, dp(42))
         )
+
+        renderStyles()
 
         modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(3), dp(3), dp(3), dp(3))
-            background = rounded(Color.rgb(24, 24, 26), 22)
+            setPadding(0, dp(4), 0, dp(4))
         }
-
-        renderModes()
 
         root.addView(
             modeRow,
-            LinearLayout.LayoutParams(-1, dp(42)).apply {
-                bottomMargin = dp(10)
+            LinearLayout.LayoutParams(-1, dp(48)).apply {
+                topMargin = dp(4)
             }
         )
 
+        renderModes()
+
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), 0, dp(10), dp(2))
+            gravity = Gravity.CENTER
+            setPadding(0, dp(6), 0, dp(2))
         }
 
-        galleryButton = label("▧", 26f, white).apply {
-            background = rounded(glass, 18)
-            contentDescription = "Открыть галерею"
+        galleryButton = label("▧", 28f, white).apply {
+            background = rounded(Color.rgb(30, 30, 32), 18)
+            isClickable = true
             setOnClickListener { openGallery() }
         }
 
+        controls.addView(
+            galleryButton,
+            LinearLayout.LayoutParams(dp(58), dp(58)).apply {
+                rightMargin = dp(24)
+            }
+        )
+
         shutterOuter = FrameLayout(this).apply {
-            background = circle(Color.TRANSPARENT, white, 3)
-            contentDescription = "Сделать фото или начать запись"
+            background = circle(white)
             isClickable = true
             isFocusable = true
         }
 
         shutterInner = View(this).apply {
-            background = circle(white)
+            background = circle(Color.BLACK)
         }
 
         shutterOuter.addView(
             shutterInner,
-            FrameLayout.LayoutParams(dp(52), dp(52), Gravity.CENTER)
+            FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER)
         )
 
         shutterOuter.setOnClickListener {
-            if (currentMode == "ФОТО") {
-                takePhoto()
-            } else if (activeRecording != null) {
-                stopVideoRecording()
-            } else {
-                requestVideoRecording()
+            when {
+                currentMode == "ФОТО" -> takePhoto()
+
+                activeRecording != null -> stopVideoRecording()
+
+                else -> requestVideoRecording()
             }
         }
 
-        switchButton = label("↻", 28f, white).apply {
-            background = rounded(glass, 18)
-            contentDescription = "Переключить камеру"
+        controls.addView(
+            shutterOuter,
+            LinearLayout.LayoutParams(dp(68), dp(68))
+        )
+
+        switchButton = label("↻", 32f, white).apply {
+            background = rounded(Color.rgb(30, 30, 32), 18)
+            isClickable = true
             setOnClickListener {
                 if (activeRecording != null) {
-                    toast("Сначала останови запись")
+                    toast("Останови запись перед сменой камеры")
                     return@setOnClickListener
                 }
+
                 frontCamera = !frontCamera
                 zoom = 1f
-                startCamera()
-                updateCameraLabel()
                 updateZoomText()
+                startCamera()
             }
         }
 
-        val sideSize = dp(52)
+        controls.addView(
+            switchButton,
+            LinearLayout.LayoutParams(dp(58), dp(58)).apply {
+                leftMargin = dp(24)
+            }
+        )
 
-        controls.addView(galleryButton, LinearLayout.LayoutParams(sideSize, sideSize))
-        controls.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        controls.addView(shutterOuter, LinearLayout.LayoutParams(dp(74), dp(74)))
-        controls.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        controls.addView(switchButton, LinearLayout.LayoutParams(sideSize, sideSize))
+        root.addView(
+            controls,
+            LinearLayout.LayoutParams(-1, dp(78))
+        )
 
-        root.addView(controls)
         setContentView(root)
+
+        updateCameraLabel()
         updateShutterAppearance()
     }
 
@@ -385,51 +435,42 @@ class MainActivity : ComponentActivity() {
         styleRow.removeAllViews()
 
         val styles = listOf(
-            "NATURAL",
-            "CINEMA",
-            "TEAL",
-            "WARM",
-            "COOL"
+            "NATURAL" to "NAT",
+            "CINEMA" to "CINE",
+            "TEAL" to "T&O",
+            "WARM" to "WARM",
+            "COOL" to "COOL"
         )
 
-        styles.forEach { style ->
-            val title = when (style) {
-                "NATURAL" -> "NAT"
-                "CINEMA" -> "CINE"
-                "TEAL" -> "T&O"
-                "WARM" -> "WARM"
-                else -> "COOL"
-            }
-
+        styles.forEach { (style, title) ->
             val item = label(
                 title,
-                9f,
-                if (style == currentStyle) gold else secondary,
-                style == currentStyle
+                10f,
+                if (currentStyle == style) gold else secondary
             ).apply {
                 background = rounded(
-                    if (style == currentStyle) selectedBackground else Color.TRANSPARENT,
-                    12
+                    if (currentStyle == style) {
+                        selectedBackground
+                    } else {
+                        Color.TRANSPARENT
+                    },
+                    10
                 )
+
+                isClickable = true
+
                 setOnClickListener {
                     currentStyle = style
                     renderStyles()
-                    toast(
-                        when (style) {
-                            "NATURAL" -> "Профиль Natural выбран"
-                            "CINEMA" -> "Профиль Cinema выбран"
-                            "TEAL" -> "Профиль Teal & Orange выбран"
-                            "WARM" -> "Профиль Warm Film выбран"
-                            else -> "Профиль Cool Film выбран"
-                        } + ". Применится к следующему фото"
-                    )
+                    toast("Профиль $currentStyle выбран")
                 }
             }
 
             styleRow.addView(
                 item,
-                LinearLayout.LayoutParams(0, -1, 1f).apply {
-                    marginEnd = dp(2)
+                LinearLayout.LayoutParams(0, dp(38), 1f).apply {
+                    leftMargin = dp(2)
+                    rightMargin = dp(2)
                 }
             )
         }
@@ -438,74 +479,121 @@ class MainActivity : ComponentActivity() {
     private fun renderModes() {
         modeRow.removeAllViews()
 
-        listOf("КИНО", "ВИДЕО", "ФОТО", "ПОРТРЕТ").forEach { mode ->
+        val modes = listOf("КИНО", "ВИДЕО", "ФОТО", "ПОРТРЕТ")
+
+        modes.forEach { mode ->
             val item = label(
                 mode,
-                10f,
-                if (currentMode == mode) white else secondary,
-                currentMode == mode
+                11f,
+                if (currentMode == mode) gold else secondary
             ).apply {
                 background = rounded(
-                    if (currentMode == mode) selectedBackground else Color.TRANSPARENT,
-                    18
+                    if (currentMode == mode) selectedBackground
+                    else Color.TRANSPARENT,
+                    12
                 )
 
+                isClickable = true
+
                 setOnClickListener {
-                    if (mode == "ФОТО" || mode == "ВИДЕО") {
-                        if (activeRecording != null && mode != currentMode) {
-                            toast("Сначала останови запись")
-                            return@setOnClickListener
+                    when (mode) {
+                        "ФОТО", "ВИДЕО" -> {
+                            if (activeRecording != null && mode != currentMode) {
+                                toast("Сначала останови запись")
+                                return@setOnClickListener
+                            }
+
+                            currentMode = mode
+                            renderModes()
+                            updateShutterAppearance()
                         }
 
-                        currentMode = mode
-                        renderModes()
-                        updateShutterAppearance()
-                    } else {
-                        toast("$mode пока не реализован")
+                        else -> {
+                            toast("Режим $mode пока не реализован")
+                        }
                     }
                 }
             }
 
             modeRow.addView(
                 item,
-                LinearLayout.LayoutParams(0, -1, 1f).apply {
-                    marginEnd = dp(2)
+                LinearLayout.LayoutParams(0, dp(38), 1f).apply {
+                    leftMargin = dp(2)
+                    rightMargin = dp(2)
                 }
             )
         }
     }
 
     private fun updateShutterAppearance() {
-        val recording = activeRecording != null
-        shutterInner.background = if (recording) {
-            rounded(Color.RED, 7)
-        } else if (currentMode == "ВИДЕО") {
-            rounded(Color.RED, 22)
-        } else {
-            circle(white)
-        }
+        if (!::shutterOuter.isInitialized) return
 
-        shutterOuter.contentDescription = when {
-            recording -> "Остановить видеозапись"
-            currentMode == "ВИДЕО" -> "Начать видеозапись"
-            else -> "Сделать фото"
+        if (activeRecording != null) {
+            shutterOuter.background = circle(Color.RED)
+            shutterInner.background = rounded(Color.WHITE, 6)
+            val params = shutterInner.layoutParams
+            params.width = dp(23)
+            params.height = dp(23)
+            shutterInner.layoutParams = params
+        } else if (currentMode == "ВИДЕО") {
+            shutterOuter.background = circle(Color.RED)
+            shutterInner.background = circle(Color.RED)
+            val params = shutterInner.layoutParams
+            params.width = dp(48)
+            params.height = dp(48)
+            shutterInner.layoutParams = params
+        } else {
+            shutterOuter.background = circle(Color.WHITE)
+            shutterInner.background = circle(Color.BLACK)
+            val params = shutterInner.layoutParams
+            params.width = dp(48)
+            params.height = dp(48)
+            shutterInner.layoutParams = params
         }
     }
 
     private fun updateCameraLabel() {
-        cameraLabel.text = if (frontCamera) "●  ФРОНТАЛЬНАЯ" else "●  ОСНОВНАЯ"
+        if (!::cameraLabel.isInitialized) return
+
+        cameraLabel.text = if (frontCamera) {
+            "FRONT CAMERA"
+        } else {
+            "BACK CAMERA"
+        }
     }
 
     private fun updateZoomText() {
-        zoomValueLabel.text = String.format(Locale.US, "%.1f×", zoom)
+        if (::zoomValueLabel.isInitialized) {
+            zoomValueLabel.text = String.format(
+                Locale.US,
+                "%.1f×",
+                zoom
+            )
+        }
     }
 
     private fun startCamera() {
-        val future = ProcessCameraProvider.getInstance(this)
+        if (cameraStarting) return
 
-        future.addListener({
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+            return
+        }
+
+        cameraStarting = true
+
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+
+        providerFuture.addListener({
             try {
-                val provider = future.get()
+                val provider = providerFuture.get()
+                cameraProvider = provider
+
                 val selector = if (frontCamera) {
                     CameraSelector.DEFAULT_FRONT_CAMERA
                 } else {
@@ -513,30 +601,35 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (!provider.hasCamera(selector)) {
-                    toast("Камера недоступна")
+                    toast("Эта камера недоступна")
                     return@addListener
                 }
 
                 val preview = Preview.Builder()
                     .build()
-                    .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                    .also {
+                        it.surfaceProvider = previewView.surfaceProvider
+                    }
 
-                imageCapture = ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                val capture = ImageCapture.Builder()
+                    .setCaptureMode(
+                        ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+                    )
+                    .setTargetRotation(previewView.display.rotation)
                     .build()
 
                 val recorder = Recorder.Builder()
                     .setQualitySelector(
                         QualitySelector.from(
                             Quality.FHD,
-                            androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(
+                            FallbackStrategy.lowerQualityOrHigherThan(
                                 Quality.SD
                             )
                         )
                     )
                     .build()
 
-                videoCapture = VideoCapture.withOutput(recorder)
+                val video = VideoCapture.withOutput(recorder)
 
                 provider.unbindAll()
 
@@ -544,30 +637,264 @@ class MainActivity : ComponentActivity() {
                     this,
                     selector,
                     preview,
-                    imageCapture,
-                    videoCapture
+                    capture,
+                    video
                 )
 
-                updateCameraLabel()
-                updateZoomText()
+                imageCapture = capture
+                videoCapture = video
 
-                val state = camera?.cameraInfo?.zoomState?.value
-                if (state != null) {
-                    zoom = zoom.coerceIn(state.minZoomRatio, state.maxZoomRatio)
-                    applyZoom(zoom)
-                    updateZoomText()
-                }
+                val minZoom = camera!!.cameraInfo.zoomState.value
+                    ?.minZoomRatio ?: 1f
+
+                val maxZoom = camera!!.cameraInfo.zoomState.value
+                    ?.maxZoomRatio ?: 10f
+
+                zoom = zoom.coerceIn(minZoom, maxZoom)
+
+                camera!!.cameraControl.setZoomRatio(zoom)
+
+                updateZoomText()
+                updateCameraLabel()
+
             } catch (e: Exception) {
-                toast("Ошибка запуска камеры: ${e.message ?: "неизвестная ошибка"}")
+                toast("Ошибка запуска камеры: ${e.message}")
+            } finally {
+                cameraStarting = false
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun applyZoom(value: Float) {
-        val activeCamera = camera ?: return
-        val state = activeCamera.cameraInfo.zoomState.value ?: return
-        val safeValue = value.coerceIn(state.minZoomRatio, state.maxZoomRatio)
-        activeCamera.cameraControl.setZoomRatio(safeValue)
+        val state = camera?.cameraInfo?.zoomState?.value
+
+        val minZoom = state?.minZoomRatio ?: 1f
+        val maxZoom = state?.maxZoomRatio ?: 10f
+
+        zoom = value.coerceIn(minZoom, maxZoom)
+
+        camera?.cameraControl?.setZoomRatio(zoom)
+
+        updateZoomText()
+    }
+
+    private fun takePhoto() {
+        val capture = imageCapture
+
+        if (capture == null) {
+            toast("Камера ещё запускается")
+            return
+        }
+
+        val outputFile = File(
+            cacheDir,
+            "cinecam_temp_${System.currentTimeMillis()}.jpg"
+        )
+
+        val options = ImageCapture.OutputFileOptions.Builder(
+            outputFile
+        ).build()
+
+        shutterOuter.animate()
+            .scaleX(0.93f)
+            .scaleY(0.93f)
+            .setDuration(80)
+            .withEndAction {
+                shutterOuter.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(100)
+                    .start()
+            }
+            .start()
+
+        capture.takePicture(
+            options,
+            photoExecutor,
+            object : ImageCapture.OnImageSavedCallback {
+
+                override fun onImageSaved(
+                    output: ImageCapture.OutputFileResults
+                ) {
+                    val selectedStyle = currentStyle
+
+                    try {
+                        var original: Bitmap? = null
+                        var oriented: Bitmap? = null
+                        var filtered: Bitmap? = null
+
+                        try {
+                            original = BitmapFactory.decodeFile(
+                                outputFile.absolutePath
+                            ) ?: throw Exception(
+                                "Не удалось прочитать снимок"
+                            )
+
+                            val exif = ExifInterface(
+                                outputFile.absolutePath
+                            )
+
+                            val orientation = exif.getAttributeInt(
+                                ExifInterface.TAG_ORIENTATION,
+                                ExifInterface.ORIENTATION_NORMAL
+                            )
+
+                            val matrix = Matrix()
+
+                            when (orientation) {
+                                ExifInterface.ORIENTATION_ROTATE_90 ->
+                                    matrix.postRotate(90f)
+
+                                ExifInterface.ORIENTATION_ROTATE_180 ->
+                                    matrix.postRotate(180f)
+
+                                ExifInterface.ORIENTATION_ROTATE_270 ->
+                                    matrix.postRotate(270f)
+
+                                ExifInterface.ORIENTATION_FLIP_HORIZONTAL ->
+                                    matrix.preScale(-1f, 1f)
+
+                                ExifInterface.ORIENTATION_FLIP_VERTICAL ->
+                                    matrix.preScale(1f, -1f)
+
+                                ExifInterface.ORIENTATION_TRANSPOSE -> {
+                                    matrix.postRotate(90f)
+                                    matrix.postScale(-1f, 1f)
+                                }
+
+                                ExifInterface.ORIENTATION_TRANSVERSE -> {
+                                    matrix.postRotate(270f)
+                                    matrix.postScale(-1f, 1f)
+                                }
+                            }
+
+                            oriented = if (matrix.isIdentity) {
+                                original
+                            } else {
+                                Bitmap.createBitmap(
+                                    original,
+                                    0,
+                                    0,
+                                    original.width,
+                                    original.height,
+                                    matrix,
+                                    true
+                                )
+                            }
+
+                            val lutStyle = when (selectedStyle) {
+                                "CINEMA" -> LutProcessor.Style.CINE
+                                "TEAL" -> LutProcessor.Style.TEAL_ORANGE
+                                "WARM" -> LutProcessor.Style.WARM
+                                "COOL" -> LutProcessor.Style.COOL
+                                else -> LutProcessor.Style.NAT
+                            }
+
+                            filtered = if (
+                                lutStyle == LutProcessor.Style.NAT
+                            ) {
+                                oriented
+                            } else {
+                                LutProcessor.apply(
+                                    oriented!!,
+                                    LutProcessor.createStyle(lutStyle)
+                                )
+                            }
+
+                            val values = ContentValues().apply {
+                                put(
+                                    MediaStore.Images.Media.DISPLAY_NAME,
+                                    "CineCam_${System.currentTimeMillis()}.jpg"
+                                )
+
+                                put(
+                                    MediaStore.Images.Media.MIME_TYPE,
+                                    "image/jpeg"
+                                )
+
+                                put(
+                                    MediaStore.Images.Media.RELATIVE_PATH,
+                                    "Pictures/CineCam13"
+                                )
+                            }
+
+                            val uri = contentResolver.insert(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                                values
+                            ) ?: throw Exception(
+                                "Не удалось создать файл фото"
+                            )
+
+                            try {
+                                val stream = contentResolver
+                                    .openOutputStream(uri)
+                                    ?: throw Exception(
+                                        "Не удалось открыть файл фото"
+                                    )
+
+                                stream.use {
+                                    if (
+                                        !filtered!!.compress(
+                                            Bitmap.CompressFormat.JPEG,
+                                            95,
+                                            it
+                                        )
+                                    ) {
+                                        throw Exception(
+                                            "Не удалось сохранить фото"
+                                        )
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                contentResolver.delete(uri, null, null)
+                                throw e
+                            }
+
+                            runOnUiThread {
+                                toast(
+                                    "Фото с профилем $selectedStyle сохранено"
+                                )
+                            }
+
+                        } finally {
+                            if (
+                                filtered != null &&
+                                filtered !== oriented &&
+                                filtered !== original
+                            ) {
+                                filtered?.recycle()
+                            }
+
+                            if (
+                                oriented != null &&
+                                oriented !== original
+                            ) {
+                                oriented?.recycle()
+                            }
+
+                            original?.recycle()
+                        }
+
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            toast("Ошибка обработки фото: ${e.message}")
+                        }
+                    } finally {
+                        outputFile.delete()
+                    }
+                }
+
+                override fun onError(
+                    exception: ImageCaptureException
+                ) {
+                    outputFile.delete()
+
+                    runOnUiThread {
+                        toast("Ошибка фото: ${exception.message}")
+                    }
+                }
+            }
+        )
     }
 
     private fun requestVideoRecording() {
@@ -576,432 +903,185 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.RECORD_AUDIO
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
             ) != PackageManager.PERMISSION_GRANTED
         ) {
             audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
             startVideoRecording(withAudio = true)
         }
-    }
+        }
 
     private fun startVideoRecording(withAudio: Boolean) {
         val capture = videoCapture
+
         if (capture == null) {
             toast("Видеокамера ещё запускается")
             return
         }
+
+        if (activeRecording != null) return
 
         val values = ContentValues().apply {
             put(
                 MediaStore.MediaColumns.DISPLAY_NAME,
                 "CineCam_${System.currentTimeMillis()}.mp4"
             )
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "Movies/CineCam13")
+
+            put(
+                MediaStore.MediaColumns.MIME_TYPE,
+                "video/mp4"
+            )
+
+            put(
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                "Movies/CineCam13"
+            )
         }
 
         val outputOptions = MediaStoreOutputOptions.Builder(
             contentResolver,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        ).setContentValues(values).build()
+        )
+            .setContentValues(values)
+            .build()
 
         try {
-            var pending: PendingRecording = capture.output.prepareRecording(
-                this, outputOptions
+            var pending = capture.output.prepareRecording(
+                this,
+                outputOptions
             )
 
-            if (withAudio) pending = pending.withAudioEnabled()
+            if (withAudio) {
+                pending = pending.withAudioEnabled()
+            }
 
             activeRecording = pending.start(
                 ContextCompat.getMainExecutor(this)
             ) { event ->
+
                 when (event) {
                     is VideoRecordEvent.Start -> {
                         recordingStartedAt = System.currentTimeMillis()
+
                         recordLabel.visibility = View.VISIBLE
-                        recordLabel.text = "●  REC 00:00"
-                        shutterInner.background = rounded(Color.RED, 7)
+                        recordLabel.text = "● REC 00:00"
+
                         updateShutterAppearance()
                         toast("Запись началась")
                         updateRecordClock()
                     }
 
                     is VideoRecordEvent.Status -> {
-                        val durationMs = event.recordingStats.recordedDurationNanos / 1_000_000
+                        val durationMs =
+                            event.recordingStats.recordedDurationNanos /
+                                1_000_000
+
                         val totalSeconds = durationMs / 1000
                         val minutes = totalSeconds / 60
                         val seconds = totalSeconds % 60
+
                         recordLabel.text = String.format(
-                            Locale.US, "●  REC %02d:%02d", minutes, seconds
+                            Locale.US,
+                            "● REC %02d:%02d",
+                            minutes,
+                            seconds
                         )
                     }
 
                     is VideoRecordEvent.Finalize -> {
                         activeRecording = null
                         recordLabel.visibility = View.GONE
+
                         updateShutterAppearance()
 
                         if (event.hasError()) {
                             toast("Ошибка записи: ${event.error}")
                         } else {
-                            toast("Видео сохранено в Movies/CineCam13")
+                            toast(
+                                "Видео сохранено в Movies/CineCam13"
+                            )
                         }
                     }
                 }
             }
 
             updateShutterAppearance()
+
         } catch (e: Exception) {
             activeRecording = null
             updateShutterAppearance()
+
             toast("Не удалось начать запись: ${e.message}")
         }
     }
 
     private fun updateRecordClock() {
-        val recording = activeRecording ?: return
-        if (recordingStartedAt == 0L) return
+        if (
+            activeRecording == null ||
+            recordingStartedAt == 0L ||
+            isFinishing
+        ) {
+            return
+        }
 
-        val elapsed = (System.currentTimeMillis() - recordingStartedAt) / 1000
+        val elapsed =
+            (System.currentTimeMillis() - recordingStartedAt) / 1000
+
         recordLabel.text = String.format(
-            Locale.US, "●  REC %02d:%02d", elapsed / 60, elapsed % 60
+            Locale.US,
+            "● REC %02d:%02d",
+            elapsed / 60,
+            elapsed % 60
         )
 
         recordLabel.postDelayed({
-            if (activeRecording != null) updateRecordClock()
+            updateRecordClock()
         }, 1000)
     }
 
     private fun stopVideoRecording() {
-        activeRecording?.stop()
-        toast("Останавливаю запись…")
-    }
+        val recording = activeRecording
 
-    private fun takePhoto() {
-    val capture = imageCapture
-    if (capture == null) {
-        toast("Камера ещё запускается")
-        return
-    }
-
-    val values = ContentValues().apply {
-        put(
-            MediaStore.Images.Media.DISPLAY_NAME,
-            "CineCam_${System.currentTimeMillis()}.jpg"
-        )
-        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-        put(
-            MediaStore.Images.Media.RELATIVE_PATH,
-            "Pictures/CineCam13"
-        )
-    }
-
-    val outputFile = java.io.File(
-        cacheDir,
-        "cinecam_temp_${System.currentTimeMillis()}.jpg"
-    )
-
-    val options = ImageCapture.OutputFileOptions.Builder(outputFile).build()
-
-    shutterOuter.animate()
-        .scaleX(0.93f)
-        .scaleY(0.93f)
-        .setDuration(80)
-        .withEndAction {
-            shutterOuter.animate()
-                .scaleX(1f)
-                .scaleY(1f)
-                .setDuration(100)
-                .start()
+        if (recording != null) {
+            recording.stop()
+            toast("Останавливаю запись…")
         }
-        .start()
-
-    capture.takePicture(
-        options,
-        ContextCompat.getMainExecutor(this),
-        object : ImageCapture.OnImageSavedCallback {
-
-            override fun onImageSaved(
-                output: ImageCapture.OutputFileResults
-            ) {
-                Thread {
-                    try {
-                        val original = android.graphics.BitmapFactory
-                            .decodeFile(outputFile.absolutePath)
-                            ?: throw Exception("Не удалось прочитать снимок")
-
-                        val style = when (currentStyle) {
-                            "CINEMA" ->
-                                LutProcessor.Style.CINE
-                            "TEAL" ->
-                                LutProcessor.Style.TEAL_ORANGE
-                            "WARM" ->
-                                LutProcessor.Style.WARM
-                            "COOL" ->
-                                LutProcessor.Style.COOL
-                            else ->
-                                LutProcessor.Style.NAT
-                        }
-
-                        val filtered = if (style == LutProcessor.Style.NAT) {
-                            original
-                        } else {
-                            LutProcessor.apply(
-                                original,
-                                LutProcessor.createStyle(style)
-                            )
-                        }
-
-                        val finalValues = ContentValues().apply {
-                            put(
-                                MediaStore.Images.Media.DISPLAY_NAME,
-                                "CineCam_${System.currentTimeMillis()}.jpg"
-                            )
-                            put(
-                                MediaStore.Images.Media.MIME_TYPE,
-                                "image/jpeg"
-                            )
-                            put(
-                                MediaStore.Images.Media.RELATIVE_PATH,
-                                "Pictures/CineCam13"
-                            )
-                        }
-
-                        val uri = contentResolver.insert(
-                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                            finalValues
-                        ) ?: throw Exception("Не удалось создать файл фото")
-
-                        try {
-                            contentResolver.openOutputStream(uri)?.use { stream ->
-                                if (!filtered.compress(
-                                        android.graphics.Bitmap.CompressFormat.JPEG,
-                                        95,
-                                        stream
-                                    )
-                                ) {
-                                    throw Exception("Не удалось сохранить фото")
-                                }
-                            } ?: throw Exception("Не удалось открыть файл фото")
-                        } catch (e: Exception) {
-                            contentResolver.delete(uri, null, null)
-                            throw e
-                        }
-
-                        if (filtered !== original) filtered.recycle()
-                        original.recycle()
-                        outputFile.delete()
-
-                        runOnUiThread {
-private fun takePhoto() {
-    val capture = imageCapture
-
-    if (capture == null) {
-        toast("Камера ещё запускается")
-        return
     }
 
-    val outputFile = java.io.File(
-        cacheDir,
-        "cinecam_temp_${System.currentTimeMillis()}.jpg"
-    )
-
-    val options = ImageCapture.OutputFileOptions.Builder(outputFile).build()
-
-    shutterOuter.animate()
-        .scaleX(0.93f)
-        .scaleY(0.93f)
-        .setDuration(80)
-        .withEndAction {
-            shutterOuter.animate()
-                .scaleX(1f)
-                .scaleY(1f)
-                .setDuration(100)
-                .start()
-        }
-        .start()
-
-    capture.takePicture(
-        options,
-        ContextCompat.getMainExecutor(this),
-        object : ImageCapture.OnImageSavedCallback {
-
-            override fun onImageSaved(
-                output: ImageCapture.OutputFileResults
-            ) {
-                val selectedStyle = currentStyle
-
-                Thread {
-                    var original: Bitmap? = null
-                    var oriented: Bitmap? = null
-                    var filtered: Bitmap? = null
-                    var savedUri: android.net.Uri? = null
-
-                    try {
-                        original = BitmapFactory.decodeFile(
-                            outputFile.absolutePath
-                        ) ?: throw Exception("Не удалось прочитать снимок")
-
-                        val exif = ExifInterface(outputFile.absolutePath)
-
-                        val orientation = exif.getAttributeInt(
-                            ExifInterface.TAG_ORIENTATION,
-                            ExifInterface.ORIENTATION_NORMAL
-                        )
-
-                        val matrix = Matrix()
-
-                        when (orientation) {
-                            ExifInterface.ORIENTATION_ROTATE_90 ->
-                                matrix.postRotate(90f)
-
-                            ExifInterface.ORIENTATION_ROTATE_180 ->
-                                matrix.postRotate(180f)
-
-                            ExifInterface.ORIENTATION_ROTATE_270 ->
-                                matrix.postRotate(270f)
-
-                            ExifInterface.ORIENTATION_FLIP_HORIZONTAL ->
-                                matrix.preScale(-1f, 1f)
-
-                            ExifInterface.ORIENTATION_FLIP_VERTICAL ->
-                                matrix.preScale(1f, -1f)
-
-                            ExifInterface.ORIENTATION_TRANSPOSE -> {
-                                matrix.postRotate(90f)
-                                matrix.postScale(-1f, 1f)
-                            }
-
-                            ExifInterface.ORIENTATION_TRANSVERSE -> {
-                                matrix.postRotate(270f)
-                                matrix.postScale(-1f, 1f)
-                            }
-                        }
-
-                        oriented = if (matrix.isIdentity) {
-                            original
-                        } else {
-                            Bitmap.createBitmap(
-                                original,
-                                0,
-                                0,
-                                original.width,
-                                original.height,
-                                matrix,
-                                true
-                            )
-                        }
-
-                        val style = when (selectedStyle) {
-                            "CINEMA" -> LutProcessor.Style.CINE
-                            "TEAL" -> LutProcessor.Style.TEAL_ORANGE
-                            "WARM" -> LutProcessor.Style.WARM
-                            "COOL" -> LutProcessor.Style.COOL
-                            else -> LutProcessor.Style.NAT
-                        }
-
-                        filtered = if (style == LutProcessor.Style.NAT) {
-                            oriented
-                        } else {
-                            LutProcessor.apply(
-                                oriented!!,
-                                LutProcessor.createStyle(style)
-                            )
-                        }
-
-                        val finalValues = ContentValues().apply {
-                            put(
-                                MediaStore.Images.Media.DISPLAY_NAME,
-                                "CineCam_${System.currentTimeMillis()}.jpg"
-                            )
-                            put(
-                                MediaStore.Images.Media.MIME_TYPE,
-                                "image/jpeg"
-                            )
-                            put(
-                                MediaStore.Images.Media.RELATIVE_PATH,
-                                "Pictures/CineCam13"
-                            )
-                        }
-
-                        val uri = contentResolver.insert(
-                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                            finalValues
-                        ) ?: throw Exception("Не удалось создать файл фото")
-
-                        savedUri = uri
-
-                        contentResolver.openOutputStream(uri)?.use { stream ->
-                            if (!filtered!!.compress(
-                                    Bitmap.CompressFormat.JPEG,
-                                    95,
-                                    stream
-                                )
-                            ) {
-                                throw Exception("Не удалось сохранить фото")
-                            }
-                        } ?: throw Exception("Не удалось открыть файл фото")
-
-                        runOnUiThread {
-                            toast("Фото с профилем $selectedStyle сохранено")
-                        }
-
-                    } catch (e: Exception) {
-                        savedUri?.let {
-                            contentResolver.delete(it, null, null)
-                        }
-
-                        runOnUiThread {
-                            toast("Ошибка обработки фото: ${e.message}")
-                        }
-
-                    } finally {
-                        if (filtered != null && filtered !== oriented) {
-                            filtered?.recycle()
-                        }
-
-                        if (oriented != null && oriented !== original) {
-                            oriented?.recycle()
-                        }
-
-                        original?.recycle()
-                        outputFile.delete()
-                    }
-                }.start()
-            }
-
-            override fun onError(exception: ImageCaptureException) {
-                outputFile.delete()
-                toast("Ошибка фото: ${exception.message}")
-            }
-        }
-    )
-}
     private fun openGallery() {
         try {
-            val intent = android.content.Intent(
-                android.content.Intent.ACTION_VIEW
+            val intent = Intent(
+                Intent.ACTION_VIEW,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             ).apply {
-                setDataAndType(
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                    "video/*"
-                )
-                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                type = "image/*"
             }
-            startActivity(intent)
-        } catch (_: Exception) {
+
+            startActivity(
+                Intent.createChooser(
+                    intent,
+                    "Открыть галерею"
+                )
+            )
+
+        } catch (e: Exception) {
             try {
-                val intent = android.content.Intent(
-                    android.content.Intent.ACTION_VIEW
+                val fallback = Intent(
+                    Intent.ACTION_GET_CONTENT
                 ).apply {
-                    setDataAndType(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        "image/*"
-                    )
+                    type = "image/*"
                 }
-                startActivity(intent)
+
+                startActivity(
+                    Intent.createChooser(
+                        fallback,
+                        "Выбрать фотографию"
+                    )
+                )
             } catch (_: Exception) {
                 toast("Не удалось открыть галерею")
             }
@@ -1009,11 +1089,23 @@ private fun takePhoto() {
     }
 
     private fun toast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     override fun onStop() {
-        if (activeRecording != null) stopVideoRecording()
+        if (activeRecording != null) {
+            stopVideoRecording()
+        }
+
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        photoExecutor.shutdown()
+        super.onDestroy()
     }
 }
