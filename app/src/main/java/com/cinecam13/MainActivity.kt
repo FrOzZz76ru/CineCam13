@@ -2,19 +2,15 @@ package com.cinecam13
 
 import android.Manifest
 import android.content.ContentValues
-import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
-import android.os.Build
+import android.graphics.Typeface
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -32,38 +28,31 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var previewView: PreviewView
     private lateinit var zoomRow: LinearLayout
+    private lateinit var modePhoto: TextView
+    private lateinit var modeVideo: TextView
+    private lateinit var shutter: FrameLayout
+    private lateinit var galleryButton: TextView
+    private lateinit var switchButton: TextView
 
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
-
     private var frontCamera = false
     private var zoom = 1f
-    private var minSupportedZoom = 1f
-    private var maxSupportedZoom = 1f
-
     private var currentMode = "PHOTO"
     private var currentStyle = "NATURAL"
+    private var cameraProvider: ProcessCameraProvider? = null
 
-    private val zoomButtons = mutableListOf<TextView>()
-
-    private val bg = Color.rgb(9, 9, 11)
-    private val white = Color.WHITE
-    private val muted = Color.rgb(145, 145, 155)
-    private val gold = Color.rgb(222, 183, 116)
+    private val bg = Color.rgb(8, 9, 12)
+    private val panel = Color.argb(190, 25, 27, 33)
+    private val white = Color.rgb(248, 248, 250)
+    private val muted = Color.rgb(145, 148, 158)
+    private val gold = Color.rgb(231, 190, 122)
+    private val darkText = Color.rgb(20, 20, 23)
 
     private val permissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-            if (granted) {
-                startCamera()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Разреши доступ к камере",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) startCamera()
+            else toast("Разреши CineCam 13 доступ к камере")
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,11 +60,11 @@ class MainActivity : ComponentActivity() {
 
         window.statusBarColor = bg
         window.navigationBarColor = bg
+        window.decorView.systemUiVisibility = 0
 
         buildInterface()
 
-        if (
-            ContextCompat.checkSelfPermission(
+        if (ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.CAMERA
             ) == PackageManager.PERMISSION_GRANTED
@@ -86,10 +75,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
+
     private fun text(
         value: String,
         size: Float,
-        color: Int
+        color: Int,
+        bold: Boolean = false
     ): TextView {
         return TextView(this).apply {
             text = value
@@ -97,358 +90,357 @@ class MainActivity : ComponentActivity() {
             setTextColor(color)
             gravity = Gravity.CENTER
             includeFontPadding = false
+            if (bold) setTypeface(typeface, Typeface.BOLD)
         }
     }
 
-    private fun updateZoomButtons() {
-        zoomButtons.forEach { button ->
-            val factor = button.tag as Float
-            val selected = kotlin.math.abs(factor - zoom) < 0.01f
-
-            button.setTextColor(if (selected) gold else white)
-            button.setBackgroundColor(
-                if (selected) Color.rgb(40, 35, 27)
-                else Color.TRANSPARENT
-            )
+    private fun roundedBackground(color: Int, radius: Int): android.graphics.drawable.GradientDrawable {
+        return android.graphics.drawable.GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
         }
-    }
-
-    private fun rebuildZoomButtons() {
-        if (!::zoomRow.isInitialized) return
-
-        zoomRow.removeAllViews()
-        zoomButtons.clear()
-
-        val presets = if (frontCamera) {
-            listOf(0.8f, 1f, 1.5f, 2f, 3f)
-        } else {
-            listOf(0.6f, 1f, 1.5f, 2f, 3f)
-        }
-
-        val availablePresets = presets.filter {
-            it >= minSupportedZoom - 0.001f &&
-                it <= maxSupportedZoom + 0.001f
-        }
-
-        if (availablePresets.isEmpty()) {
-            addZoomButton(
-                zoom.coerceIn(minSupportedZoom, maxSupportedZoom)
-            )
-        } else {
-            availablePresets.forEach { addZoomButton(it) }
-        }
-
-        updateZoomButtons()
-    }
-
-    private fun addZoomButton(factor: Float) {
-        val button = text(
-            "${factor}×",
-            13f,
-            if (kotlin.math.abs(factor - zoom) < 0.01f) gold else white
-        ).apply {
-            tag = factor
-
-            setOnClickListener {
-                val state = camera?.cameraInfo?.zoomState?.value
-                val minZoom = state?.minZoomRatio ?: minSupportedZoom
-                val maxZoom = state?.maxZoomRatio ?: maxSupportedZoom
-
-                val actualZoom = factor.coerceIn(minZoom, maxZoom)
-                zoom = actualZoom
-                camera?.cameraControl?.setZoomRatio(actualZoom)
-                updateZoomButtons()
-            }
-        }
-
-        zoomButtons.add(button)
-
-        zoomRow.addView(
-            button,
-            LinearLayout.LayoutParams(0, dp(38), 1f).apply {
-                setMargins(dp(3), 0, dp(3), 0)
-            }
-        )
     }
 
     private fun buildInterface() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(bg)
-            setPadding(dp(14), dp(4), dp(14), dp(4))
+            setPadding(dp(14), dp(7), dp(14), dp(8))
         }
 
+        // Верхняя панель бренда
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(3), dp(7), dp(3), dp(13))
+        }
+
+        val brandColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val brand = text("CINECAM 13", 20f, white, true).apply {
+            gravity = Gravity.START
+            letterSpacing = 0.12f
+        }
+
+        val subtitle = text("CINEMATIC CAMERA", 9f, muted, true).apply {
+            gravity = Gravity.START
+            letterSpacing = 0.2f
+            setPadding(0, dp(5), 0, 0)
+        }
+
+        brandColumn.addView(brand)
+        brandColumn.addView(subtitle)
+
+        val liveBadge = text("●  LIVE", 10f, gold, true).apply {
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = roundedBackground(Color.argb(35, 231, 190, 122), 18)
         }
 
         header.addView(
-            text("CINECAM 13", 18f, white).apply {
-                gravity = Gravity.CENTER_VERTICAL or Gravity.START
-                letterSpacing = 0.12f
-            },
-            LinearLayout.LayoutParams(0, dp(42), 1f)
+            brandColumn,
+            LinearLayout.LayoutParams(0, -2, 1f)
         )
-
-        header.addView(
-            text("CINEMATIC", 11f, gold).apply {
-                letterSpacing = 0.12f
-            },
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(42)
-            )
-        )
-
+        header.addView(liveBadge)
         root.addView(header)
 
+        // Основная область предпросмотра
         val previewFrame = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(24, 24, 27))
+            background = roundedBackground(Color.rgb(17, 18, 22), 25)
+            clipToOutline = true
         }
 
         previewView = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
+            setBackgroundColor(Color.rgb(17, 18, 22))
         }
 
         previewFrame.addView(
             previewView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
+            FrameLayout.LayoutParams(-1, -1)
         )
 
-        previewFrame.addView(
-            text("● LIVE", 11f, white).apply {
-                setPadding(dp(10), dp(7), dp(10), dp(7))
-                setBackgroundColor(Color.argb(150, 0, 0, 0))
-            },
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START
-            ).apply {
-                setMargins(dp(10), dp(10), 0, 0)
-            }
-        )
+        // Тонкая верхняя метка
+        val previewLabel = text("CINE  ·  REAL-TIME PREVIEW", 9f, white, true).apply {
+            letterSpacing = 0.08f
+            setPadding(dp(11), dp(8), dp(11), dp(8))
+            background = roundedBackground(Color.argb(150, 10, 10, 13), 15)
+        }
 
+        val labelParams = FrameLayout.LayoutParams(
+            -2, -2, Gravity.TOP or Gravity.START
+        ).apply {
+            setMargins(dp(12), dp(12), 0, 0)
+        }
+        previewFrame.addView(previewLabel, labelParams)
+
+        // Индикатор камеры
+        val cameraBadge = text("BACK CAMERA", 9f, white, true).apply {
+            letterSpacing = 0.08f
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            background = roundedBackground(Color.argb(145, 10, 10, 13), 14)
+        }
+
+        val cameraBadgeParams = FrameLayout.LayoutParams(
+            -2, -2, Gravity.BOTTOM or Gravity.START
+        ).apply {
+            setMargins(dp(12), 0, 0, dp(12))
+        }
+        previewFrame.addView(cameraBadge, cameraBadgeParams)
+
+        // Обновляем надпись при переключении камеры
+        previewFrame.contentDescription = "camera_preview"
         root.addView(
             previewFrame,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            ).apply {
-                topMargin = dp(4)
-                bottomMargin = dp(4)
+            LinearLayout.LayoutParams(-1, 0, 1f).apply {
+                bottomMargin = dp(13)
             }
         )
 
+        // Зум
         zoomRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            background = roundedBackground(panel, 25)
+            setPadding(dp(5), dp(5), dp(5), dp(5))
         }
-        root.addView(zoomRow)
-
-        val lookTitle = text("CINEMATIC LOOK", 10f, muted).apply {
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            letterSpacing = 0.16f
-        }
-
         root.addView(
-            lookTitle,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(26)
-            )
+            zoomRow,
+            LinearLayout.LayoutParams(-1, dp(48)).apply {
+                bottomMargin = dp(14)
+            }
         )
+        renderZoomButtons()
+
+        // Стили изображения — пока визуальные пресеты интерфейса
+        val styleTitle = text("CINEMATIC LOOK", 10f, muted, true).apply {
+            gravity = Gravity.START
+            letterSpacing = 0.16f
+            setPadding(dp(4), 0, 0, dp(9))
+        }
+        root.addView(styleTitle)
 
         val styles = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
 
-        val styleButtons = mutableListOf<TextView>()
-
-        fun updateStyles() {
-            styleButtons.forEach { button ->
-                button.setTextColor(
-                    if (button.text.toString() == currentStyle) gold else muted
-                )
-            }
-        }
-
         listOf("NATURAL", "CINEMA", "WARM", "COOL").forEach { style ->
-            val button = text(
+            val item = text(
                 style,
-                10f,
-                if (style == currentStyle) gold else muted
+                9f,
+                if (style == currentStyle) darkText else muted,
+                style == currentStyle
             ).apply {
-                letterSpacing = 0.02f
+                background = roundedBackground(
+                    if (style == currentStyle) gold else panel,
+                    17
+                )
+                setPadding(dp(9), dp(10), dp(9), dp(10))
                 setOnClickListener {
                     currentStyle = style
-                    updateStyles()
-                    Toast.makeText(
-                        this@MainActivity,
-                        "$style выбран",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    for (i in 0 until styles.childCount) {
+                        val child = styles.getChildAt(i) as TextView
+                        val selected = child.text.toString() == currentStyle
+                        child.setTextColor(if (selected) darkText else muted)
+                        child.setTypeface(
+                            child.typeface,
+                            if (selected) Typeface.BOLD else Typeface.NORMAL
+                        )
+                        child.background = roundedBackground(
+                            if (selected) gold else panel,
+                            17
+                        )
+                    }
+                    toast("$style — оформление выбрано")
                 }
             }
 
-            styleButtons.add(button)
             styles.addView(
-                button,
-                LinearLayout.LayoutParams(0, dp(34), 1f)
+                item,
+                LinearLayout.LayoutParams(0, dp(37), 1f).apply {
+                    marginEnd = dp(5)
+                }
             )
         }
 
-        root.addView(styles)
-        updateStyles()
-
-        val modeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-
-        val videoButton = text("VIDEO", 13f, muted)
-        val photoButton = text("PHOTO", 13f, gold)
-
-        fun updateModes() {
-            videoButton.setTextColor(if (currentMode == "VIDEO") gold else muted)
-            photoButton.setTextColor(if (currentMode == "PHOTO") gold else muted)
-        }
-
-        videoButton.setOnClickListener {
-            currentMode = "VIDEO"
-            updateModes()
-            Toast.makeText(
-                this,
-                "Видеозапись пока не подключена",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-
-        photoButton.setOnClickListener {
-            currentMode = "PHOTO"
-            updateModes()
-        }
-
-        modeRow.addView(
-            videoButton,
-            LinearLayout.LayoutParams(dp(82), dp(36))
-        )
-        modeRow.addView(
-            photoButton,
-            LinearLayout.LayoutParams(dp(82), dp(36))
-        )
-        root.addView(modeRow)
-
-        val bottom = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-
-        val gallery = text("▧", 27f, white)
-        gallery.setOnClickListener {
-            try {
-                val intent = android.content.Intent(
-                    android.content.Intent.ACTION_VIEW
-                ).apply {
-                    setDataAndType(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        "image/*"
-                    )
-                }
-                startActivity(intent)
-            } catch (_: Exception) {
-                Toast.makeText(
-                    this,
-                    "Не удалось открыть галерею",
-                    Toast.LENGTH_SHORT
-                ).show()
+        root.addView(
+            styles,
+            LinearLayout.LayoutParams(-1, -2).apply {
+                bottomMargin = dp(14)
             }
-        }
-
-        bottom.addView(
-            gallery,
-            LinearLayout.LayoutParams(0, dp(66), 1f)
         )
 
-        val shutter = FrameLayout(this)
+        // Переключатель фото/видео
+        val modeContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            background = roundedBackground(panel, 24)
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+        }
 
-        val outerCircle = View(this).apply {
+        modePhoto = text("PHOTO", 11f, darkText, true)
+        modeVideo = text("VIDEO", 11f, muted, true)
+
+        modePhoto.background = roundedBackground(gold, 20)
+        modeVideo.background = roundedBackground(Color.TRANSPARENT, 20)
+
+        modeContainer.addView(
+            modePhoto,
+            LinearLayout.LayoutParams(dp(108), dp(39))
+        )
+        modeContainer.addView(
+            modeVideo,
+            LinearLayout.LayoutParams(dp(108), dp(39))
+        )
+
+        modePhoto.setOnClickListener { setMode("PHOTO") }
+        modeVideo.setOnClickListener {
+            setMode("VIDEO")
+            toast("Видеозапись добавим следующим этапом")
+        }
+
+        root.addView(
+            modeContainer,
+            LinearLayout.LayoutParams(-2, dp(49)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(13)
+            }
+        )
+
+        // Нижняя панель управления
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(2), dp(8), dp(3))
+        }
+
+        galleryButton = text("▧", 29f, white).apply {
+            background = roundedBackground(panel, 19)
+            setOnClickListener { openGallery() }
+        }
+
+        val shutterOuter = FrameLayout(this).apply {
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
                 setColor(Color.TRANSPARENT)
                 setStroke(dp(3), white)
             }
+            contentDescription = "Take photo"
         }
 
-        val innerCircle = View(this).apply {
+        val shutterInner = View(this).apply {
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
                 setColor(white)
             }
         }
 
-        shutter.addView(
-            outerCircle,
-            FrameLayout.LayoutParams(dp(58), dp(58), Gravity.CENTER)
+        shutterOuter.addView(
+            shutterInner,
+            FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER)
         )
-        shutter.addView(
-            innerCircle,
-            FrameLayout.LayoutParams(dp(46), dp(46), Gravity.CENTER)
-        )
-
+        shutter = shutterOuter
         shutter.setOnClickListener {
-            if (currentMode == "PHOTO") {
-                takePhoto()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Запись видео пока не подключена",
-                    Toast.LENGTH_SHORT
-                ).show()
+            if (currentMode == "PHOTO") takePhoto()
+            else toast("Видеозапись пока не реализована")
+        }
+
+        switchButton = text("↻", 30f, white).apply {
+            background = roundedBackground(panel, 19)
+            setOnClickListener {
+                frontCamera = !frontCamera
+                zoom = 1f
+                startCamera()
+                toast(if (frontCamera) "Фронтальная камера" else "Основная камера")
             }
         }
 
-        bottom.addView(
+        val sideSize = dp(52)
+        controls.addView(
+            galleryButton,
+            LinearLayout.LayoutParams(sideSize, sideSize)
+        )
+
+        controls.addView(
+            View(this),
+            LinearLayout.LayoutParams(0, 1, 1f)
+        )
+
+        controls.addView(
             shutter,
-            LinearLayout.LayoutParams(0, dp(66), 1.2f)
+            LinearLayout.LayoutParams(dp(68), dp(68))
         )
 
-        bottom.addView(
-            text("↻", 31f, white).apply {
-                setOnClickListener {
-                    frontCamera = !frontCamera
-                    startCamera()
-                }
-            },
-            LinearLayout.LayoutParams(0, dp(66), 1f)
+        controls.addView(
+            View(this),
+            LinearLayout.LayoutParams(0, 1, 1f)
         )
 
-        root.addView(bottom)
+        controls.addView(
+            switchButton,
+            LinearLayout.LayoutParams(sideSize, sideSize)
+        )
 
-        val diagnosticButton = text(
-            "ПРОВЕРИТЬ КАМЕРЫ",
-            12f,
-            gold
-        ).apply {
-            setOnClickListener { showCameraDiagnostics() }
+        root.addView(controls)
+        setContentView(root)
+    }
+
+    private fun renderZoomButtons() {
+        zoomRow.removeAllViews()
+
+        val presets = if (frontCamera) {
+            listOf(1f, 1.5f, 2f, 3f)
+        } else {
+            listOf(0.6f, 1f, 1.5f, 2f, 3f)
         }
 
-        root.addView(
-            diagnosticButton,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(38)
+        presets.forEach { value ->
+            val selected = kotlin.math.abs(zoom - value) < 0.01f
+
+            val button = text(
+                if (value == value.toInt().toFloat()) "${value.toInt()}×"
+                else "${value}×",
+                12f,
+                if (selected) darkText else white,
+                selected
+            ).apply {
+                background = roundedBackground(
+                    if (selected) gold else Color.TRANSPARENT,
+                    20
+                )
+                setOnClickListener {
+                    zoom = value
+                    applyZoom(value)
+                    renderZoomButtons()
+                }
+            }
+
+            zoomRow.addView(
+                button,
+                LinearLayout.LayoutParams(0, -1, 1f).apply {
+                    marginEnd = dp(2)
+                }
             )
+        }
+    }
+
+    private fun setMode(mode: String) {
+        currentMode = mode
+
+        modePhoto.setTextColor(if (mode == "PHOTO") darkText else muted)
+        modePhoto.background = roundedBackground(
+            if (mode == "PHOTO") gold else Color.TRANSPARENT,
+            20
         )
 
-        setContentView(root)
+        modeVideo.setTextColor(if (mode == "VIDEO") darkText else muted)
+        modeVideo.background = roundedBackground(
+            if (mode == "VIDEO") gold else Color.TRANSPARENT,
+            20
+        )
     }
 
     private fun startCamera() {
@@ -457,6 +449,7 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             try {
                 val provider = future.get()
+                cameraProvider = provider
 
                 val selector = if (frontCamera) {
                     CameraSelector.DEFAULT_FRONT_CAMERA
@@ -465,22 +458,16 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (!provider.hasCamera(selector)) {
-                    Toast.makeText(
-                        this,
-                        "Эта камера недоступна",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    toast("Эта камера недоступна")
                     return@addListener
                 }
 
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
+                val preview = Preview.Builder()
+                    .build()
+                    .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
                 imageCapture = ImageCapture.Builder()
-                    .setCaptureMode(
-                        ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
-                    )
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
 
                 provider.unbindAll()
@@ -492,146 +479,41 @@ class MainActivity : ComponentActivity() {
                     imageCapture
                 )
 
-                val state = camera?.cameraInfo?.zoomState?.value
-
-                minSupportedZoom = state?.minZoomRatio ?: 1f
-                maxSupportedZoom = state?.maxZoomRatio ?: 1f
-
-                zoom = zoom.coerceIn(
-                    minSupportedZoom,
-                    maxSupportedZoom
-                )
-
-                camera?.cameraControl?.setZoomRatio(zoom)
-                rebuildZoomButtons()
+                // Сохраняем выбранный зум после запуска камеры.
+                applyZoom(zoom)
+                renderZoomButtons()
 
             } catch (e: Exception) {
-                Toast.makeText(
-                    this,
-                    "Ошибка запуска камеры: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
+                toast("Ошибка запуска камеры: ${e.message ?: "неизвестная ошибка"}")
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun showCameraDiagnostics() {
-        try {
-            val manager = getSystemService(
-                Context.CAMERA_SERVICE
-            ) as CameraManager
+    private fun applyZoom(value: Float) {
+        val activeCamera = camera ?: return
+        val zoomState = activeCamera.cameraInfo.zoomState.value ?: return
 
-            val report = StringBuilder()
+        val minZoom = zoomState.minZoomRatio
+        val maxZoom = zoomState.maxZoomRatio
 
-            report.append("CINECAM 13 — ДИАГНОСТИКА\n")
-            report.append("Android: ${Build.VERSION.RELEASE}\n")
-            report.append("SDK: ${Build.VERSION.SDK_INT}\n\n")
-
-            for (id in manager.cameraIdList) {
-                val c = manager.getCameraCharacteristics(id)
-
-                val facing = when (
-                    c.get(CameraCharacteristics.LENS_FACING)
-                ) {
-                    CameraCharacteristics.LENS_FACING_FRONT -> "FRONT"
-                    CameraCharacteristics.LENS_FACING_BACK -> "BACK"
-                    else -> "EXTERNAL/UNKNOWN"
-                }
-
-                val focalLengths = c.get(
-                    CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS
-                )
-
-                val sensorSize = c.get(
-                    CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE
-                )
-
-                val capabilities = c.get(
-                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
-                )
-
-                val physicalIds = if (Build.VERSION.SDK_INT >= 28) {
-                    c.physicalCameraIds
-                } else {
-                    emptySet()
-                }
-
-                report.append("ID: $id ($facing)\n")
-                report.append("Focal lengths: ${focalLengths?.joinToString() ?: "unknown"}\n")
-                report.append("Sensor size: ${sensorSize ?: "unknown"}\n")
-                report.append("Physical IDs: ${physicalIds.ifEmpty { setOf("not exposed") }.joinToString()}\n")
-                report.append("Capabilities: ${capabilities?.joinToString() ?: "unknown"}\n\n")
+        // Не подменяем 0.6× значением 1×: если CameraX не поддерживает
+        // 0.6× на выбранной камере, сообщаем об этом явно.
+        if (value < minZoom || value > maxZoom) {
+            if (!frontCamera && value == 0.6f) {
+                toast("0.6× недоступен в текущем режиме камеры")
+            } else {
+                toast("Этот уровень зума недоступен")
             }
-
-            val scroll = ScrollView(this)
-            val content = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(16), dp(16), dp(16), dp(16))
-                setBackgroundColor(bg)
-            }
-
-            content.addView(
-                text(
-                    report.toString(),
-                    13f,
-                    white
-                ).apply {
-                    gravity = Gravity.START
-                    setTextIsSelectable(true)
-                },
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                )
-            )
-
-            val copyButton = text("СКОПИРОВАТЬ ОТЧЁТ", 14f, gold).apply {
-                setPadding(0, dp(16), 0, dp(16))
-                setOnClickListener {
-                    val clipboard = getSystemService(
-                        Context.CLIPBOARD_SERVICE
-                    ) as android.content.ClipboardManager
-
-                    clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText(
-                            "CineCam camera diagnostics",
-                            report.toString()
-                        )
-                    )
-
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Отчёт скопирован",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-
-            content.addView(copyButton)
-            scroll.addView(content)
-
-            android.app.AlertDialog.Builder(this)
-                .setTitle("Диагностика камер")
-                .setView(scroll)
-                .setPositiveButton("Закрыть", null)
-                .show()
-
-        } catch (e: Exception) {
-            Toast.makeText(
-                this,
-                "Ошибка диагностики: ${e.message}",
-                Toast.LENGTH_LONG
-            ).show()
+            return
         }
+
+        activeCamera.cameraControl.setZoomRatio(value)
     }
 
     private fun takePhoto() {
-        val capture = imageCapture ?: run {
-            Toast.makeText(
-                this,
-                "Камера ещё запускается",
-                Toast.LENGTH_SHORT
-            ).show()
+        val capture = imageCapture
+        if (capture == null) {
+            toast("Камера ещё запускается")
             return
         }
 
@@ -641,10 +523,7 @@ class MainActivity : ComponentActivity() {
                 "CineCam_${System.currentTimeMillis()}.jpg"
             )
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            put(
-                MediaStore.Images.Media.RELATIVE_PATH,
-                "Pictures/CineCam13"
-            )
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CineCam13")
         }
 
         val options = ImageCapture.OutputFileOptions.Builder(
@@ -657,33 +536,32 @@ class MainActivity : ComponentActivity() {
             options,
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
-
-                override fun onImageSaved(
-                    output: ImageCapture.OutputFileResults
-                ) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Фото сохранено в Pictures/CineCam13",
-                        Toast.LENGTH_LONG
-                    ).show()
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    toast("Фото сохранено в Pictures/CineCam13")
                 }
 
-                override fun onError(
-                    exception: ImageCaptureException
-                ) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Ошибка фото: ${exception.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
+                override fun onError(exception: ImageCaptureException) {
+                    toast("Ошибка фото: ${exception.message ?: "неизвестная ошибка"}")
                 }
             }
         )
     }
 
-    private fun dp(value: Int): Int {
-        return (
-            value * resources.displayMetrics.density + 0.5f
-        ).toInt()
+    private fun openGallery() {
+        try {
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            ).apply {
+                type = "image/*"
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            toast("Не удалось открыть галерею")
+        }
+    }
+
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 }
