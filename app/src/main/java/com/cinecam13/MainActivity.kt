@@ -1,12 +1,17 @@
 package com.cinecam13
 
 import android.Manifest
+import android.app.Activity
+import android.app.AlertDialog
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.PointF
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -15,7 +20,9 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -26,10 +33,11 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.MeteringPoint
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.PendingRecording
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
@@ -38,6 +46,9 @@ import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -46,8 +57,22 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var root: FrameLayout
     private lateinit var previewView: PreviewView
-    private lateinit var cameraExecutor: ExecutorService
 
+    private lateinit var topInfo: TextView
+    private lateinit var flashButton: TextView
+    private lateinit var settingsButton: TextView
+    private lateinit var shutterButton: FrameLayout
+    private lateinit var shutterInner: View
+    private lateinit var modePhoto: TextView
+    private lateinit var modeVideo: TextView
+    private lateinit var cameraButton: TextView
+    private lateinit var galleryButton: ImageView
+    private lateinit var filterButton: TextView
+    private lateinit var filterPanel: LinearLayout
+    private lateinit var focusRing: View
+    private lateinit var recordingIndicator: TextView
+
+    private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
     private var videoCapture: VideoCapture<Recorder>? = null
@@ -55,25 +80,25 @@ class MainActivity : ComponentActivity() {
 
     private var frontCamera = false
     private var videoMode = false
+    private var filterPanelVisible = false
     private var recordingActive = false
-
     private var flashMode = ImageCapture.FLASH_MODE_OFF
     private var selectedStyle = LutProcessor.Style.NAT
-    private var filterPanelVisible = false
+    private var videoQuality = Quality.FHD
 
-    private lateinit var flashButton: TextView
-    private lateinit var modeButton: TextView
-    private lateinit var captureButton: TextView
-    private lateinit var filterButton: TextView
-    private lateinit var filterPanel: LinearLayout
-    private lateinit var styleContainer: LinearLayout
-    private lateinit var statusText: TextView
+    private var focusHideRunnable: Runnable? = null
 
-    private val permissionLauncher =
+    private val cameraExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor()
+
+    private val permissionsLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
-        ) {
-            if (hasCameraPermission()) {
+        ) { results ->
+            val cameraGranted =
+                results[Manifest.permission.CAMERA] == true
+
+            if (cameraGranted) {
                 startCamera()
             } else {
                 toast("Для работы CineCam13 нужен доступ к камере")
@@ -83,39 +108,49 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        cameraExecutor = Executors.newSingleThreadExecutor()
-
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
+        window.decorView.systemUiVisibility = 0
+
+        window.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+        )
 
         buildInterface()
+        requestPermissionsIfNeeded()
+    }
 
-        if (hasCameraPermission()) {
+    private fun requestPermissionsIfNeeded() {
+        val permissions = mutableListOf(
+            Manifest.permission.CAMERA
+        )
+
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
             startCamera()
         } else {
-            permissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.CAMERA,
-                    Manifest.permission.RECORD_AUDIO
-                )
-            )
+            permissionsLauncher.launch(permissions.toTypedArray())
         }
     }
 
     // ---------------------------------------------------------
-    // ИНТЕРФЕЙС
+    // INTERFACE
     // ---------------------------------------------------------
+
     private fun buildInterface() {
         root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
         }
 
-        setContentView(root)
-
         previewView = PreviewView(this).apply {
-            implementationMode =
-                PreviewView.ImplementationMode.COMPATIBLE
-
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
 
@@ -127,529 +162,614 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-        // Нажатие на изображение запускает фокусировку.
+        // Tap to focus.
         previewView.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_UP) {
                 focusAt(event.x, event.y)
+                true
+            } else {
+                true
             }
-            true
         }
 
-        // Верхняя панель.
-        val topBar = LinearLayout(this).apply {
+        buildFocusRing()
+        buildTopControls()
+        buildBottomControls()
+        buildFilterPanel()
+
+        setContentView(root)
+    }
+
+    private fun buildTopControls() {
+        val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(8), dp(12), dp(8))
-            setBackgroundColor(0x66000000)
+            setPadding(dp(18), dp(8), dp(18), dp(8))
         }
 
         val title = TextView(this).apply {
             text = "CINECAM"
-            textSize = 19f
-            letterSpacing = 0.18f
+            textSize = 18f
             setTextColor(Color.WHITE)
+            typeface = Typeface.create(
+                "sans-serif-medium",
+                Typeface.BOLD
+            )
+            letterSpacing = 0.18f
+        }
+
+        topInfo = TextView(this).apply {
+            text = "13 PRO"
+            textSize = 10f
+            setTextColor(Color.WHITE)
+            alpha = 0.65f
+            letterSpacing = 0.16f
+            gravity = Gravity.CENTER
+        }
+
+        val titleGroup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(title)
+            addView(
+                topInfo,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(2)
+                }
+            )
         }
 
         val spacer = View(this)
 
-        flashButton = TextView(this).apply {
-            text = "⚡ OFF"
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-
-            setOnClickListener {
-                cycleFlash()
-            }
+        flashButton = makePill("⚡ OFF") {
+            cycleFlash()
         }
 
-        val switchButton = TextView(this).apply {
-            text = "↻"
-            textSize = 27f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setPadding(dp(10), 0, dp(4), 0)
-
-            setOnClickListener {
-                if (!recordingActive) {
-                    frontCamera = !frontCamera
-
-                    if (frontCamera) {
-                        flashMode = ImageCapture.FLASH_MODE_OFF
-                    }
-
-                    updateFlashButton()
-                    startCamera()
-                }
-            }
+        settingsButton = makeCircleButton("⚙", 46) {
+            showSettings()
         }
 
-        topBar.addView(title)
-
-        topBar.addView(
-            spacer,
-            LinearLayout.LayoutParams(0, dp(1), 1f)
+        top.addView(
+            titleGroup,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         )
 
-        topBar.addView(flashButton)
-        topBar.addView(switchButton)
+        top.addView(
+            spacer,
+            LinearLayout.LayoutParams(0, 1, 1f)
+        )
+
+        // Flash remains accessible but is not a tiny icon.
+        top.addView(
+            flashButton,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(44)
+            ).apply {
+                marginEnd = dp(8)
+            }
+        )
+
+        top.addView(
+            settingsButton,
+            LinearLayout.LayoutParams(dp(46), dp(46))
+        )
 
         root.addView(
-            topBar,
+            top,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(58),
+                dp(76),
                 Gravity.TOP
             )
         )
+    }
 
-        // Нижняя панель управления.
-        val bottomPanel = LinearLayout(this).apply {
+    private fun buildBottomControls() {
+        val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(8), dp(12), dp(12))
-            setBackgroundColor(0xE6000000.toInt())
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(18), dp(12), dp(18), dp(18))
+            background = roundedBackground(
+                Color.argb(175, 8, 9, 12),
+                30
+            )
         }
 
-        // Переключение фото и видео.
-        val modeRow = LinearLayout(this).apply {
+        // Filter control.
+        val filterRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
         }
 
-        val photoModeButton = makeTextButton("ФОТО") {
-            if (!recordingActive) {
-                videoMode = false
-                updateModeUI()
-            }
+        filterButton = makePill("✧  ${selectedStyle.displayName()}") {
+            toggleFilterPanel()
         }
 
-        modeButton = makeTextButton("ВИДЕО") {
-            if (!recordingActive) {
-                videoMode = true
-                updateModeUI()
-            }
-        }
-
-        modeRow.addView(
-            photoModeButton,
-            LinearLayout.LayoutParams(dp(110), dp(42))
-        )
-
-        modeRow.addView(
-            modeButton,
-            LinearLayout.LayoutParams(dp(110), dp(42))
-        )
-
-        bottomPanel.addView(
-            modeRow,
+        filterRow.addView(
+            filterButton,
             LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(42)
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(44)
             )
         )
 
-        // Одна отдельная кнопка выбора фильтров.
-        filterButton = TextView(this).apply {
-            text = "◈  NATURAL  ▾"
-            textSize = 12f
-            letterSpacing = 0.06f
-            gravity = Gravity.CENTER
-            setTextColor(0xFFFFD27A.toInt())
-            setPadding(dp(20), dp(10), dp(20), dp(10))
-            setBackgroundColor(0xFF252525.toInt())
-
-            setOnClickListener {
-                toggleFilterPanel()
-            }
-        }
-
-        val filterButtonContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(0, dp(6), 0, dp(6))
-
-            addView(
-                filterButton,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    dp(42)
-                )
-            )
-        }
-
-        bottomPanel.addView(
-            filterButtonContainer,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(54)
-            )
-        )
-
-        // Отдельная панель фильтров.
-        filterPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(6), dp(10), dp(8))
-            setBackgroundColor(0xFF171717.toInt())
-            visibility = View.GONE
-        }
-
-        val filterHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val filterTitle = TextView(this).apply {
-            text = "ЦВЕТОВЫЕ ПРОФИЛИ"
-            textSize = 11f
-            letterSpacing = 0.10f
-            setTextColor(0xFFAAAAAA.toInt())
-        }
-
-        val closeFilters = TextView(this).apply {
-            text = "✕"
-            textSize = 17f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setPadding(dp(10), dp(4), dp(8), dp(4))
-
-            setOnClickListener {
-                hideFilterPanel()
-            }
-        }
-
-        filterHeader.addView(
-            filterTitle,
-            LinearLayout.LayoutParams(0, dp(32), 1f)
-        )
-
-        filterHeader.addView(
-            closeFilters,
-            LinearLayout.LayoutParams(dp(40), dp(32))
-        )
-
-        filterPanel.addView(filterHeader)
-
-        val filterScroll =
-            android.widget.HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-                clipToPadding = false
-            }
-
-        styleContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        filterScroll.addView(styleContainer)
-
-        filterPanel.addView(
-            filterScroll,
+        bottom.addView(
+            filterRow,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(48)
             )
         )
 
-        buildStyleButtons()
+        // Photo / video selector.
+        val modeRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            orientation = LinearLayout.HORIZONTAL
+            background = roundedBackground(
+                Color.argb(100, 255, 255, 255),
+                24
+            )
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
 
-        bottomPanel.addView(
-            filterPanel,
+        modePhoto = makeModeButton("ФОТО")
+        modeVideo = makeModeButton("ВИДЕО")
+
+        modePhoto.setOnClickListener { setVideoMode(false) }
+        modeVideo.setOnClickListener { setVideoMode(true) }
+
+        modeRow.addView(
+            modePhoto,
+            LinearLayout.LayoutParams(dp(110), dp(42))
+        )
+
+        modeRow.addView(
+            modeVideo,
+            LinearLayout.LayoutParams(dp(110), dp(42))
+        )
+
+        bottom.addView(
+            modeRow,
             LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(88)
-            )
-        )
-        // Галерея и кнопка съёмки.
-        val controls = FrameLayout(this).apply {
-            setPadding(dp(4), dp(2), dp(4), dp(2))
-        }
-
-        val galleryButton = TextView(this).apply {
-            text = "▧"
-            textSize = 29f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-
-            setOnClickListener {
-                openGallery()
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(50)
+            ).apply {
+                topMargin = dp(8)
             }
-        }
-
-        captureButton = TextView(this).apply {
-            text = "●"
-            textSize = 56f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-
-            setOnClickListener {
-                if (videoMode) {
-                    toggleRecording()
-                } else {
-                    takePhoto()
-                }
-            }
-        }
-
-        controls.addView(
-            galleryButton,
-            FrameLayout.LayoutParams(
-                dp(60),
-                dp(64),
-                Gravity.START or Gravity.CENTER_VERTICAL
-            )
         )
 
-        controls.addView(
-            captureButton,
+        // Main camera controls.
+        val controls = FrameLayout(this)
+
+        galleryButton = ImageView(this).apply {
+            setImageResource(android.R.drawable.ic_menu_gallery)
+            setColorFilter(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(15), dp(15), dp(15), dp(15))
+            background = roundedBackground(
+                Color.argb(90, 255, 255, 255),
+                50
+            )
+            contentDescription = "Открыть галерею"
+            setOnClickListener { openGallery() }
+        }
+
+        shutterButton = FrameLayout(this).apply {
+            background = roundedBackground(
+                Color.TRANSPARENT,
+                100,
+                Color.WHITE,
+                4
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onShutterPressed() }
+        }
+
+        shutterInner = View(this).apply {
+            background = roundedBackground(
+                Color.WHITE,
+                100
+            )
+        }
+
+        shutterButton.addView(
+            shutterInner,
             FrameLayout.LayoutParams(
-                dp(90),
+                dp(68),
                 dp(68),
                 Gravity.CENTER
             )
         )
 
-        bottomPanel.addView(
-            controls,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(70)
+        cameraButton = makeCircleButton("↻", 58) {
+            switchCamera()
+        }
+
+        controls.addView(
+            galleryButton,
+            FrameLayout.LayoutParams(
+                dp(56),
+                dp(56),
+                Gravity.CENTER_VERTICAL or Gravity.START
             )
         )
 
-        statusText = TextView(this).apply {
-            text = "ГОТОВ К СЪЁМКЕ"
-            textSize = 10f
-            gravity = Gravity.CENTER
-            letterSpacing = 0.12f
-            setTextColor(0xFFCCCCCC.toInt())
-        }
+        controls.addView(
+            shutterButton,
+            FrameLayout.LayoutParams(
+                dp(88),
+                dp(88),
+                Gravity.CENTER
+            )
+        )
 
-        bottomPanel.addView(
-            statusText,
+        controls.addView(
+            cameraButton,
+            FrameLayout.LayoutParams(
+                dp(58),
+                dp(58),
+                Gravity.CENTER_VERTICAL or Gravity.END
+            )
+        )
+
+        bottom.addView(
+            controls,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(20)
+                dp(100)
+            ).apply {
+                topMargin = dp(8)
+            }
+        )
+
+        recordingIndicator = TextView(this).apply {
+            text = "●  ЗАПИСЬ"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.RED)
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+
+        bottom.addView(
+            recordingIndicator,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(22)
             )
         )
 
         root.addView(
-            bottomPanel,
+            bottom,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM
-            )
+            ).apply {
+                leftMargin = dp(10)
+                rightMargin = dp(10)
+                bottomMargin = dp(8)
+            }
         )
 
-        updateModeUI()
-        updateFlashButton()
+        updateModeButtons()
+    }
+
+    private fun buildFocusRing() {
+        focusRing = View(this).apply {
+            background = roundedBackground(
+                Color.TRANSPARENT,
+                6,
+                Color.rgb(255, 211, 65),
+                2
+            )
+            visibility = View.GONE
+            elevation = dp(20).toFloat()
+        }
+
+        root.addView(
+            focusRing,
+            FrameLayout.LayoutParams(dp(68), dp(68))
+        )
     }
 
     // ---------------------------------------------------------
-    // ФИЛЬТРЫ И ПАНЕЛЬ
+    // FILTER PANEL
     // ---------------------------------------------------------
+    private fun buildFilterPanel() {
+        filterPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+            background = roundedBackground(
+                Color.argb(238, 20, 21, 25),
+                26
+            )
+            visibility = View.GONE
+            elevation = dp(18).toFloat()
+        }
 
-    private fun buildStyleButtons() {
-        styleContainer.removeAllViews()
+        val heading = TextView(this).apply {
+            text = "СТИЛЬ ИЗОБРАЖЕНИЯ"
+            textSize = 12f
+            letterSpacing = 0.12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+        }
 
-        val styles = listOf(
-            LutProcessor.Style.NAT to "NATURAL",
-            LutProcessor.Style.CINE to "CINEMA",
-            LutProcessor.Style.KODACHROME_64 to "KODAK 64",
-            LutProcessor.Style.PORTRA_400 to "PORTRA 400",
-            LutProcessor.Style.PORTRA_800 to "PORTRA 800",
-            LutProcessor.Style.FUJI_FILM to "FUJI FILM",
-            LutProcessor.Style.FUJI_PORTRAIT to "FUJI PORTRAIT",
-            LutProcessor.Style.TEAL_ORANGE to "TEAL ORANGE",
-            LutProcessor.Style.MOODY_AQUA to "MOODY AQUA",
-            LutProcessor.Style.WARM to "WARM",
-            LutProcessor.Style.COOL to "COOL"
+        filterPanel.addView(
+            heading,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(34)
+            )
         )
 
-        styles.forEach { (style, label) ->
-            val selected = style == selectedStyle
+        val styles = LutProcessor.Style.values()
 
-            val button = TextView(this).apply {
-                text = if (selected) "✓  $label" else label
-                textSize = 11f
-                gravity = Gravity.CENTER
-                letterSpacing = 0.02f
-                setPadding(dp(13), 0, dp(13), 0)
+        styles.forEach { style ->
+            val item = TextView(this).apply {
+                text = if (style == selectedStyle) {
+                    "✓   ${style.displayName()}"
+                } else {
+                    style.displayName()
+                }
 
-                setTextColor(
-                    if (selected) 0xFFFFD27A.toInt()
-                    else 0xFFE0E0E0.toInt()
-                )
+                textSize = 15f
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), 0, dp(14), 0)
 
-                setBackgroundColor(
-                    if (selected) 0xFF353027.toInt()
-                    else 0xFF222222.toInt()
+                background = roundedBackground(
+                    if (style == selectedStyle) {
+                        Color.argb(80, 255, 255, 255)
+                    } else {
+                        Color.TRANSPARENT
+                    },
+                    14
                 )
 
                 setOnClickListener {
                     selectedStyle = style
-
-                    filterButton.text = "◈  $label  ▾"
-
-                    buildStyleButtons()
-                    hideFilterPanel()
-
-                    statusText.text = "ПРОФИЛЬ: $label"
+                    updateFilterButton()
+                    refreshFilterPanel()
                 }
             }
 
-            val params = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                dp(36)
+            filterPanel.addView(
+                item,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(44)
+                ).apply {
+                    topMargin = dp(3)
+                }
+            )
+        }
+
+        val close = makePill("ГОТОВО") {
+            toggleFilterPanel()
+        }
+
+        filterPanel.addView(
+            close,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(44)
             ).apply {
-                marginEnd = dp(7)
+                topMargin = dp(10)
+            }
+        )
+
+        root.addView(
+            filterPanel,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+            ).apply {
+                leftMargin = dp(20)
+                rightMargin = dp(20)
+                bottomMargin = dp(300)
+            }
+        )
+    }
+
+    private fun refreshFilterPanel() {
+        filterPanel.removeAllViews()
+
+        val heading = TextView(this).apply {
+            text = "ВЫБЕРИ СТИЛЬ"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.12f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+        }
+
+        filterPanel.addView(
+            heading,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(36)
+            )
+        )
+
+        LutProcessor.Style.values().forEach { style ->
+            val item = TextView(this).apply {
+                text = (if (style == selectedStyle) "✓   " else "     ") +
+                    style.displayName()
+
+                textSize = 15f
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), 0, dp(14), 0)
+                background = roundedBackground(
+                    if (style == selectedStyle) {
+                        Color.argb(80, 255, 255, 255)
+                    } else {
+                        Color.TRANSPARENT
+                    },
+                    14
+                )
+
+                setOnClickListener {
+                    selectedStyle = style
+                    updateFilterButton()
+                    refreshFilterPanel()
+                }
             }
 
-            styleContainer.addView(button, params)
+            filterPanel.addView(
+                item,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(42)
+                ).apply {
+                    topMargin = dp(2)
+                }
+            )
         }
+
+        val close = makePill("ГОТОВО") {
+            toggleFilterPanel()
+        }
+
+        filterPanel.addView(
+            close,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(44)
+            ).apply {
+                topMargin = dp(8)
+            }
+        )
     }
 
     private fun toggleFilterPanel() {
+        filterPanelVisible = !filterPanelVisible
+
+        filterPanel.visibility =
+            if (filterPanelVisible) View.VISIBLE else View.GONE
+
         if (filterPanelVisible) {
-            hideFilterPanel()
-        } else {
-            filterPanelVisible = true
-            filterPanel.visibility = View.VISIBLE
-            updateFilterButtonArrow()
+            refreshFilterPanel()
         }
     }
 
-    private fun hideFilterPanel() {
-        filterPanelVisible = false
-        filterPanel.visibility = View.GONE
-        updateFilterButtonArrow()
+    private fun updateFilterButton() {
+        filterButton.text = "✧  ${selectedStyle.displayName()}"
     }
 
-    private fun updateFilterButtonArrow() {
-        val label = styleName(selectedStyle)
-        val arrow = if (filterPanelVisible) "▴" else "▾"
-
-        filterButton.text = "◈  $label  $arrow"
-    }
-
-    private fun styleName(style: LutProcessor.Style): String {
-        return when (style) {
-            LutProcessor.Style.NAT -> "NATURAL"
-            LutProcessor.Style.CINE -> "CINEMA"
-            LutProcessor.Style.KODACHROME_64 -> "KODAK 64"
-            LutProcessor.Style.PORTRA_400 -> "PORTRA 400"
-            LutProcessor.Style.PORTRA_800 -> "PORTRA 800"
-            LutProcessor.Style.FUJI_FILM -> "FUJI FILM"
-            LutProcessor.Style.FUJI_PORTRAIT -> "FUJI PORTRAIT"
-            LutProcessor.Style.TEAL_ORANGE -> "TEAL ORANGE"
-            LutProcessor.Style.MOODY_AQUA -> "MOODY AQUA"
-            LutProcessor.Style.WARM -> "WARM"
-            LutProcessor.Style.COOL -> "COOL"
+    private fun LutProcessor.Style.displayName(): String {
+        return when (this) {
+            LutProcessor.Style.NAT -> "Natural"
+            LutProcessor.Style.KODACHROME_64 -> "Kodachrome 64"
+            LutProcessor.Style.PORTRA_400 -> "Portra 400"
+            LutProcessor.Style.PORTRA_800 -> "Portra 800"
+            LutProcessor.Style.FUJI_FILM -> "Fuji Film"
+            LutProcessor.Style.FUJI_PORTRAIT -> "Fuji Portrait"
+            LutProcessor.Style.CINE -> "Cinematic"
+            LutProcessor.Style.TEAL_ORANGE -> "Teal & Orange"
+            LutProcessor.Style.MOODY_AQUA -> "Moody Aqua"
+            LutProcessor.Style.WARM -> "Warm"
+            LutProcessor.Style.COOL -> "Cool"
         }
     }
 
     // ---------------------------------------------------------
-    // РЕЖИМЫ
-    // ---------------------------------------------------------
-
-    private fun updateModeUI() {
-        modeButton.text = if (videoMode) "● ВИДЕО" else "ВИДЕО"
-        captureButton.text = if (recordingActive) "■"
-        else if (videoMode) "◉" else "●"
-
-        statusText.text = when {
-            recordingActive -> "ИДЁТ ЗАПИСЬ"
-            videoMode -> "РЕЖИМ ВИДЕО"
-            else -> "РЕЖИМ ФОТО"
-        }
-    }
-
-    // ---------------------------------------------------------
-    // ЗАПУСК КАМЕРЫ
+    // CAMERA
     // ---------------------------------------------------------
     private fun startCamera() {
-        val providerFuture =
-            ProcessCameraProvider.getInstance(this)
+        val future = ProcessCameraProvider.getInstance(this)
 
-        providerFuture.addListener({
+        future.addListener({
             try {
-                val provider = providerFuture.get()
-
-                val selector = if (frontCamera) {
-                    CameraSelector.DEFAULT_FRONT_CAMERA
-                } else {
-                    CameraSelector.DEFAULT_BACK_CAMERA
-                }
-
-                if (!provider.hasCamera(selector)) {
-                    toast("Эта камера недоступна")
-                    return@addListener
-                }
-
-                val preview = Preview.Builder()
-                    .build()
-                    .also {
-                        it.surfaceProvider = previewView.surfaceProvider
-                    }
-
-                imageCapture = ImageCapture.Builder()
-                    .setCaptureMode(
-                        ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
-                    )
-                    .setFlashMode(flashMode)
-                    .build()
-
-                val recorder = Recorder.Builder()
-                    .setQualitySelector(
-                        QualitySelector.from(Quality.FHD)
-                    )
-                    .build()
-
-                videoCapture = VideoCapture.withOutput(recorder)
-
-                provider.unbindAll()
-
-                camera = provider.bindToLifecycle(
-                    this,
-                    selector,
-                    preview,
-                    imageCapture,
-                    videoCapture
-                )
-
-                updateFlashButton()
-                statusText.text = "КАМЕРА ГОТОВА"
-
+                val provider = future.get()
+                cameraProvider = provider
+                bindCamera(provider)
             } catch (e: Exception) {
-                toast(
-                    "Не удалось запустить камеру: " +
-                        (e.localizedMessage ?: "ошибка")
-                )
+                toast("Не удалось запустить камеру: ${e.message}")
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    // ---------------------------------------------------------
-    // ВСПЫШКА
-    // ---------------------------------------------------------
+    private fun bindCamera(provider: ProcessCameraProvider) {
+        val selector = if (frontCamera) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+
+        try {
+            provider.unbindAll()
+
+            val preview = Preview.Builder()
+                .build()
+                .also {
+                    it.surfaceProvider = previewView.surfaceProvider
+                }
+
+            imageCapture = ImageCapture.Builder()
+                .setCaptureMode(
+                    ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+                )
+                .setFlashMode(flashMode)
+                .build()
+
+            val recorder = Recorder.Builder()
+                .setQualitySelector(
+                    QualitySelector.from(videoQuality)
+                )
+                .build()
+
+            videoCapture = VideoCapture.withOutput(recorder)
+
+            camera = provider.bindToLifecycle(
+                this,
+                selector,
+                preview,
+                imageCapture,
+                videoCapture
+            )
+
+            updateFlashButton()
+            updateZoomInfo()
+        } catch (e: Exception) {
+            toast("Ошибка запуска камеры: ${e.message}")
+        }
+    }
+
+    private fun switchCamera() {
+        if (recordingActive) {
+            toast("Сначала останови запись")
+            return
+        }
+
+        frontCamera = !frontCamera
+        flashMode = ImageCapture.FLASH_MODE_OFF
+
+        startCamera()
+    }
 
     private fun cycleFlash() {
         if (frontCamera) {
-            toast("Вспышка доступна только на задней камере")
+            toast("Вспышка доступна на основной камере")
             return
         }
 
         flashMode = when (flashMode) {
-            ImageCapture.FLASH_MODE_OFF ->
-                ImageCapture.FLASH_MODE_AUTO
-
-            ImageCapture.FLASH_MODE_AUTO ->
-                ImageCapture.FLASH_MODE_ON
-
-            else ->
-                ImageCapture.FLASH_MODE_OFF
+            ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
+            ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
+            else -> ImageCapture.FLASH_MODE_OFF
         }
 
         imageCapture?.flashMode = flashMode
@@ -658,58 +778,84 @@ class MainActivity : ComponentActivity() {
 
     private fun updateFlashButton() {
         flashButton.text = when {
-            frontCamera -> "⚡ OFF"
-
-            flashMode == ImageCapture.FLASH_MODE_AUTO ->
-                "⚡ AUTO"
-
-            flashMode == ImageCapture.FLASH_MODE_ON ->
-                "⚡ ON"
-
-            else -> "⚡ OFF"
+            frontCamera -> "⚡ —"
+            flashMode == ImageCapture.FLASH_MODE_OFF -> "⚡ OFF"
+            flashMode == ImageCapture.FLASH_MODE_AUTO -> "⚡ AUTO"
+            else -> "⚡ ON"
         }
     }
 
+    private fun updateZoomInfo() {
+        val zoom = camera?.cameraInfo?.zoomState?.value?.zoomRatio ?: 1f
+        topInfo.text = String.format(
+            Locale.US,
+            "13 PRO  ·  %.1fx",
+            zoom
+        )
+    }
+
     // ---------------------------------------------------------
-    // ФОКУСИРОВКА
+    // FOCUS
     // ---------------------------------------------------------
 
     private fun focusAt(x: Float, y: Float) {
         val activeCamera = camera ?: return
 
-        if (previewView.width <= 0 || previewView.height <= 0) {
-            return
+        val factory = SurfaceOrientedMeteringPointFactory(
+            previewView.width.toFloat(),
+            previewView.height.toFloat()
+        )
+
+        val point = factory.createPoint(x, y)
+
+        val action = FocusMeteringAction.Builder(
+            point,
+            FocusMeteringAction.FLAG_AF or
+                FocusMeteringAction.FLAG_AE
+        )
+            .setAutoCancelDuration(3, TimeUnit.SECONDS)
+            .build()
+
+        activeCamera.cameraControl.startFocusAndMetering(action)
+
+        focusRing.x = x - dp(34)
+        focusRing.y = y - dp(34)
+        focusRing.visibility = View.VISIBLE
+        focusRing.alpha = 1f
+
+        focusHideRunnable?.let { root.removeCallbacks(it) }
+
+        val hide = Runnable {
+            focusRing.animate()
+                .alpha(0f)
+                .setDuration(180)
+                .withEndAction {
+                    focusRing.visibility = View.GONE
+                    focusRing.alpha = 1f
+                }
+                .start()
         }
 
-        try {
-            val point: MeteringPoint =
-                previewView.meteringPointFactory.createPoint(x, y)
-
-            val action = FocusMeteringAction.Builder(
-                point,
-                FocusMeteringAction.FLAG_AF or
-                    FocusMeteringAction.FLAG_AE or
-                    FocusMeteringAction.FLAG_AWB
-            )
-                .setAutoCancelDuration(3, TimeUnit.SECONDS)
-                .build()
-
-            activeCamera.cameraControl
-                .startFocusAndMetering(action)
-                .addListener({
-                    runOnUiThread {
-                        statusText.text = "ФОКУСИРОВКА"
-                    }
-                }, ContextCompat.getMainExecutor(this))
-
-        } catch (_: Exception) {
-            statusText.text = "НЕ УДАЛОСЬ СФОКУСИРОВАТЬСЯ"
-        }
+        focusHideRunnable = hide
+        root.postDelayed(hide, 1600)
     }
 
     // ---------------------------------------------------------
-    // ФОТОГРАФИЯ
+    // PHOTO
     // ---------------------------------------------------------
+
+    private fun onShutterPressed() {
+        if (recordingActive) {
+            stopRecording()
+            return
+        }
+
+        if (videoMode) {
+            startRecording()
+        } else {
+            takePhoto()
+        }
+    }
 
     private fun takePhoto() {
         val capture = imageCapture ?: run {
@@ -717,17 +863,13 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (recordingActive) return
+        shutterButton.isEnabled = false
+
+        val filename = "CineCam_${timestamp()}.jpg"
 
         val values = ContentValues().apply {
-            put(
-                MediaStore.Images.Media.DISPLAY_NAME,
-                "CineCam_${System.currentTimeMillis()}.jpg"
-            )
-            put(
-                MediaStore.Images.Media.MIME_TYPE,
-                "image/jpeg"
-            )
+            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(
@@ -737,132 +879,106 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val uri = contentResolver.insert(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            values
-        )
-
-        if (uri == null) {
-            toast("Не удалось создать файл фотографии")
-            return
-        }
-
-        val options = ImageCapture.OutputFileOptions.Builder(
+        val output = ImageCapture.OutputFileOptions.Builder(
             contentResolver,
-            uri,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             values
         ).build()
 
-        statusText.text = "СЪЁМКА..."
-
         capture.takePicture(
-            options,
+            output,
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
-
                 override fun onImageSaved(
-                    output: ImageCapture.OutputFileResults
+                    result: ImageCapture.OutputFileResults
                 ) {
+                    shutterButton.isEnabled = true
+
+                    val uri = result.savedUri
+
+                    if (uri == null) {
+                        toast("Фото сохранено, но URI недоступен")
+                        refreshGalleryThumbnail()
+                        return
+                    }
+
+                    refreshGalleryThumbnail()
+
                     if (selectedStyle == LutProcessor.Style.NAT) {
-                        statusText.text = "ФОТО СОХРАНЕНО"
                         toast("Фото сохранено")
                     } else {
-                        statusText.text = "ПРИМЕНЕНИЕ ФИЛЬТРА..."
-
-                        applyStyleToPhoto(uri, selectedStyle)
+                        applyFilterToPhoto(uri, selectedStyle)
                     }
                 }
 
-                override fun onError(
-                    exception: ImageCaptureException
-                ) {
-                    contentResolver.delete(uri, null, null)
-
-                    statusText.text = "ОШИБКА СЪЁМКИ"
+                override fun onError(exception: ImageCaptureException) {
+                    shutterButton.isEnabled = true
                     toast("Ошибка фото: ${exception.message}")
                 }
             }
         )
     }
 
-    private fun applyStyleToPhoto(
+    private fun applyFilterToPhoto(
         uri: Uri,
         style: LutProcessor.Style
     ) {
-        cameraExecutor.execute {
-            var original: Bitmap? = null
-            var filtered: Bitmap? = null
+        toast("Применяю стиль: ${style.displayName()}")
 
+        cameraExecutor.execute {
             try {
-                original = contentResolver
-                    .openInputStream(uri)
+                val source = contentResolver.openInputStream(uri)
                     ?.use { BitmapFactory.decodeStream(it) }
-                    ?: throw IllegalStateException(
-                        "Не удалось прочитать фото"
-                    )
+                    ?: throw IllegalStateException("Не удалось прочитать фото")
 
                 val lut = LutProcessor.createStyle(style)
-                filtered = LutProcessor.apply(original, lut)
+                val filtered = LutProcessor.apply(source, lut)
 
-                contentResolver.openOutputStream(uri, "wt")
-                    ?.use { output ->
-                        if (!filtered.compress(
-                                Bitmap.CompressFormat.JPEG,
-                                95,
-                                output
-                            )
-                        ) {
-                            throw IllegalStateException(
-                                "Не удалось сохранить фильтр"
-                            )
-                        }
+                source.recycle()
+
+                contentResolver.openOutputStream(uri, "wt")?.use { stream ->
+                    if (!filtered.compress(
+                            android.graphics.Bitmap.CompressFormat.JPEG,
+                            95,
+                            stream
+                        )
+                    ) {
+                        throw IllegalStateException("Не удалось записать фото")
                     }
-                    ?: throw IllegalStateException(
-                        "Не удалось открыть фото"
-                    )
+                } ?: throw IllegalStateException("Не удалось открыть файл")
+
+                filtered.recycle()
 
                 runOnUiThread {
-                    statusText.text = "ФОТО СОХРАНЕНО"
                     toast("Фото сохранено с фильтром")
+                    refreshGalleryThumbnail()
                 }
-
             } catch (e: Exception) {
                 runOnUiThread {
-                    statusText.text = "ФОТО СОХРАНЕНО"
-                    toast("Фото сохранено, но фильтр не применён")
+                    toast(
+                        "Фото сохранено, но фильтр не применён: " +
+                            (e.message ?: "ошибка")
+                    )
                 }
-            } finally {
-                original?.recycle()
-                filtered?.recycle()
             }
         }
     }
 
     // ---------------------------------------------------------
-    // ВИДЕО
+    // VIDEO
     // ---------------------------------------------------------
-
-    private fun toggleRecording() {
-        if (recordingActive) {
-            recording?.stop()
-            statusText.text = "ЗАВЕРШЕНИЕ ЗАПИСИ..."
-            return
-        }
-
-        val video = videoCapture ?: run {
+    
+private fun startRecording() {
+        val capture = videoCapture ?: run {
             toast("Камера ещё запускается")
             return
         }
 
+        val filename = "CineCam_${timestamp()}.mp4"
+
         val values = ContentValues().apply {
-            put(
-                MediaStore.Video.Media.DISPLAY_NAME,
-                "CineCam_${System.currentTimeMillis()}.mp4"
-            )
-            put(
-                MediaStore.Video.Media.MIME_TYPE,
-                "video/mp4"
-            )
+            put(MediaStore.Video.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(
@@ -872,17 +988,15 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val outputOptions = MediaStoreOutputOptions.Builder(
+        val output = MediaStoreOutputOptions.Builder(
             contentResolver,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         )
             .setContentValues(values)
             .build()
 
-        var pending = video.output.prepareRecording(
-            this,
-            outputOptions
-        )
+        var pending: PendingRecording =
+            capture.output.prepareRecording(this, output)
 
         if (
             ContextCompat.checkSelfPermission(
@@ -899,39 +1013,177 @@ class MainActivity : ComponentActivity() {
             when (event) {
                 is VideoRecordEvent.Start -> {
                     recordingActive = true
-                    updateModeUI()
-                    statusText.text = "ИДЁТ ЗАПИСЬ"
+                    recordingIndicator.visibility = View.VISIBLE
+                    shutterInner.background = roundedBackground(
+                        Color.RED,
+                        12
+                    )
+                    toast("Запись началась")
                 }
 
                 is VideoRecordEvent.Finalize -> {
                     recordingActive = false
                     recording = null
-                    updateModeUI()
+
+                    recordingIndicator.visibility = View.GONE
+
+                    shutterInner.background = roundedBackground(
+                        Color.WHITE,
+                        100
+                    )
 
                     if (event.hasError()) {
-                        statusText.text = "ОШИБКА ВИДЕО"
                         toast("Ошибка записи видео")
                     } else {
-                        statusText.text = "ВИДЕО СОХРАНЕНО"
                         toast("Видео сохранено")
                     }
+
+                    refreshGalleryThumbnail()
                 }
             }
         }
     }
 
+    private fun stopRecording() {
+        recording?.stop()
+    }
+
+    private fun setVideoMode(enabled: Boolean) {
+        if (recordingActive) return
+
+        videoMode = enabled
+        updateModeButtons()
+
+        shutterInner.background = roundedBackground(
+            Color.WHITE,
+            if (videoMode) 12 else 100
+        )
+    }
+
+    private fun updateModeButtons() {
+        modePhoto.background = roundedBackground(
+            if (!videoMode) Color.WHITE else Color.TRANSPARENT,
+            22
+        )
+
+        modePhoto.setTextColor(
+            if (!videoMode) Color.BLACK else Color.WHITE
+        )
+
+        modeVideo.background = roundedBackground(
+            if (videoMode) Color.WHITE else Color.TRANSPARENT,
+            22
+        )
+
+        modeVideo.setTextColor(
+            if (videoMode) Color.BLACK else Color.WHITE
+        )
+    }
+
     // ---------------------------------------------------------
-    // ГАЛЕРЕЯ
+    // SETTINGS
+    // ---------------------------------------------------------
+
+    private fun showSettings() {
+        val options = arrayOf(
+            "Качество видео: ${videoQualityLabel()}",
+            "Вспышка: ${flashLabel()}",
+            "Увеличить масштаб",
+            "Уменьшить масштаб",
+            "Сбросить масштаб",
+            "Переключить камеру",
+            "Выбрать стиль",
+            "Закрыть"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("CineCam13")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> chooseVideoQuality()
+                    1 -> cycleFlash()
+                    2 -> changeZoom(0.5f)
+                    3 -> changeZoom(-0.5f)
+                    4 -> resetZoom()
+                    5 -> switchCamera()
+                    6 -> {
+                        if (!filterPanelVisible) {
+                            toggleFilterPanel()
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+            .show()
+    }
+
+    private fun chooseVideoQuality() {
+        val labels = arrayOf(
+            "Full HD (1080p)",
+            "HD (720p)",
+            "SD (480p)"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Качество видео")
+            .setItems(labels) { _, which ->
+                videoQuality = when (which) {
+                    0 -> Quality.FHD
+                    1 -> Quality.HD
+                    else -> Quality.SD
+                }
+
+                if (cameraProvider != null) {
+                    startCamera()
+                }
+
+                toast("Качество: ${labels[which]}")
+            }
+            .show()
+    }
+
+    private fun videoQualityLabel(): String {
+        return when (videoQuality) {
+            Quality.FHD -> "1080p"
+            Quality.HD -> "720p"
+            Quality.SD -> "480p"
+            Quality.UHD -> "4K"
+            else -> "Авто"
+        }
+    }
+
+    private fun flashLabel(): String {
+        return when (flashMode) {
+            ImageCapture.FLASH_MODE_OFF -> "Выкл."
+            ImageCapture.FLASH_MODE_AUTO -> "Авто"
+            else -> "Вкл."
+        }
+    }
+
+    private fun changeZoom(delta: Float) {
+        val activeCamera = camera ?: return
+
+        val state = activeCamera.cameraInfo.zoomState.value ?: return
+
+        val newZoom = (state.zoomRatio + delta)
+            .coerceIn(state.minZoomRatio, state.maxZoomRatio)
+
+        activeCamera.cameraControl.setZoomRatio(newZoom)
+        updateZoomInfo()
+    }
+
+    private fun resetZoom() {
+        camera?.cameraControl?.setZoomRatio(1f)
+        updateZoomInfo()
+    }
+
+    // ---------------------------------------------------------
+    // GALLERY
     // ---------------------------------------------------------
     private fun openGallery() {
-        val intent = Intent(
-            Intent.ACTION_VIEW
-        ).apply {
-            setDataAndType(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                "image/*"
-            )
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            type = "image/*"
+            action = Intent.ACTION_VIEW
         }
 
         try {
@@ -941,37 +1193,98 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun refreshGalleryThumbnail() {
+        // Здесь пока используется универсальная иконка галереи.
+        // Позже можно заменить её последним сохранённым снимком.
+        galleryButton.invalidate()
+    }
+
     // ---------------------------------------------------------
-    // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    // UI HELPERS
     // ---------------------------------------------------------
 
-    private fun makeTextButton(
-        text: String,
+    private fun makePill(
+        label: String,
         action: () -> Unit
     ): TextView {
         return TextView(this).apply {
-            this.text = text
+            text = label
             textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setPadding(dp(16), 0, dp(16), 0)
+
+            background = roundedBackground(
+                Color.argb(100, 255, 255, 255),
+                30
+            )
+
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { action() }
+        }
+    }
+
+    private fun makeCircleButton(
+        label: String,
+        size: Int,
+        action: () -> Unit
+    ): TextView {
+        return TextView(this).apply {
+            text = label
+            textSize = 25f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
 
-            setOnClickListener {
-                action()
+            background = roundedBackground(
+                Color.argb(100, 255, 255, 255),
+                100
+            )
+
+            isClickable = true
+            isFocusable = true
+            contentDescription = label
+            setOnClickListener { action() }
+        }
+    }
+
+    private fun makeModeButton(label: String): TextView {
+        return TextView(this).apply {
+            text = label
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.08f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+        }
+    }
+
+    private fun roundedBackground(
+        color: Int,
+        radiusDp: Int,
+        strokeColor: Int? = null,
+        strokeWidthDp: Int = 1
+    ): GradientDrawable {
+        return GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radiusDp).toFloat()
+
+            if (strokeColor != null) {
+                setStroke(dp(strokeWidthDp), strokeColor)
             }
         }
     }
 
-    private fun hasCameraPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density).toInt()
     }
 
-    private fun dp(value: Int): Int {
-        return (
-            value * resources.displayMetrics.density
-        ).toInt()
+    private fun timestamp(): String {
+        return SimpleDateFormat(
+            "yyyyMMdd_HHmmss",
+            Locale.US
+        ).format(Date())
     }
 
     private fun toast(message: String) {
@@ -983,7 +1296,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        recording?.close()
+        recording?.stop()
         cameraExecutor.shutdown()
         super.onDestroy()
     }
