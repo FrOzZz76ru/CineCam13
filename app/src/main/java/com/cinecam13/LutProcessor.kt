@@ -8,6 +8,7 @@ import java.io.InputStreamReader
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 object LutProcessor {
 
@@ -17,6 +18,7 @@ object LutProcessor {
     )
 
     enum class Style {
+        // Исходные 11 стилей
         NAT,
         KODACHROME_64,
         PORTRA_400,
@@ -27,124 +29,125 @@ object LutProcessor {
         TEAL_ORANGE,
         MOODY_AQUA,
         WARM,
-        COOL
+        COOL,
+
+        // Новые 14 стилей
+        PORTRA_160,
+        KODAK_GOLD_200,
+        KODAK_EKTAR_100,
+        FUJI_PRO_400H,
+        FUJI_VELVIA,
+        CINEMATIC_TEAL,
+        BLEACH_BYPASS,
+        VINTAGE_FILM,
+        MATTE_FILM,
+        BLACK_AND_WHITE,
+        NOIR,
+        GOLDEN_HOUR,
+        NIGHT_CINEMA,
+        ARCTIC_BLUE
     }
 
-    /*
-     * LUT кэшируются: при повторном использовании профиля
-     * цветовая таблица не создаётся заново.
-     */
-    private val lutCache = HashMap<Style, CubeLut>()
+    private val cache = HashMap<Style, CubeLut>()
 
+    /**
+     * Создаёт процедурный LUT.
+     *
+     * Важно: это авторские цветовые стили, вдохновлённые
+     * характером плёнки, а не официальные LUT Kodak или Fujifilm.
+     */
     @Synchronized
     fun createStyle(
         style: Style,
         size: Int = 33
     ): CubeLut {
-        require(size >= 2)
-
-        if (size == 33) {
-            lutCache[style]?.let { return it }
+        require(size >= 2) {
+            "Размер LUT должен быть не меньше 2"
         }
 
+        if (size == 33) {
+            cache[style]?.let { return it }
+        }
+
+        val lut = generateLut(style, size)
+
+        if (size == 33) {
+            cache[style] = lut
+        }
+
+        return lut
+    }
+
+    private fun generateLut(
+        style: Style,
+        size: Int
+    ): CubeLut {
         val values = FloatArray(size * size * size * 3)
-        var offset = 0
+        var index = 0
 
         for (bIndex in 0 until size) {
+            val b = bIndex.toFloat() / (size - 1)
+
             for (gIndex in 0 until size) {
+                val g = gIndex.toFloat() / (size - 1)
+
                 for (rIndex in 0 until size) {
                     val r = rIndex.toFloat() / (size - 1)
-                    val g = gIndex.toFloat() / (size - 1)
-                    val b = bIndex.toFloat() / (size - 1)
 
-                    val rgb = transform(r, g, b, style)
+                    val result = transform(r, g, b, style)
 
-                    values[offset++] = rgb[0].coerceIn(0f, 1f)
-                    values[offset++] = rgb[1].coerceIn(0f, 1f)
-                    values[offset++] = rgb[2].coerceIn(0f, 1f)
+                    values[index++] = result[0].coerceIn(0f, 1f)
+                    values[index++] = result[1].coerceIn(0f, 1f)
+                    values[index++] = result[2].coerceIn(0f, 1f)
                 }
             }
         }
 
-        val result = CubeLut(size, values)
-
-        if (size == 33) {
-            lutCache[style] = result
-        }
-
-        return result
+        return CubeLut(size, values)
     }
 
-    fun loadCube(input: InputStream): CubeLut {
-        val points = mutableListOf<Float>()
-        var lutSize = 0
-
-        BufferedReader(InputStreamReader(input)).use { reader ->
-            reader.forEachLine { original ->
-                val line = original.trim()
-
-                if (
-                    line.isEmpty() ||
-                    line.startsWith("#") ||
-                    line.startsWith("TITLE")
-                ) {
-                    return@forEachLine
-                }
-
-                val parts = line.split(Regex("\\s+"))
-
-                when (parts[0].uppercase()) {
-                    "LUT_3D_SIZE" -> {
-                        lutSize = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                    }
-
-                    "DOMAIN_MIN", "DOMAIN_MAX" -> Unit
-
-                    else -> {
-                        if (parts.size >= 3) {
-                            val r = parts[0].toFloatOrNull()
-                            val g = parts[1].toFloatOrNull()
-                            val b = parts[2].toFloatOrNull()
-
-                            if (r != null && g != null && b != null) {
-                                points.add(r)
-                                points.add(g)
-                                points.add(b)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        require(lutSize >= 2) {
-            "Некорректный размер LUT"
-        }
-
-        val expected = lutSize * lutSize * lutSize * 3
-
-        require(points.size == expected) {
-            "Количество значений LUT не соответствует размеру"
-        }
-
-        return CubeLut(lutSize, points.toFloatArray())
-    }
-
-    fun loadCube(file: File): CubeLut =
-        file.inputStream().use { loadCube(it) }
-
+    /**
+     * Применяет LUT с полной интенсивностью.
+     * Сохраняет совместимость с прежними вызовами.
+     */
     fun apply(
         source: Bitmap,
         lut: CubeLut
     ): Bitmap {
-        require(!source.isRecycled)
-        require(lut.size >= 2)
+        return apply(source, lut, 1f)
+    }
+
+    /**
+     * Применяет LUT с регулируемой интенсивностью.
+     *
+     * intensity:
+     * 0.0 = оригинальное изображение
+     * 0.5 = половина эффекта
+     * 1.0 = полный эффект
+     */
+    fun apply(
+        source: Bitmap,
+        lut: CubeLut,
+        intensity: Float
+    ): Bitmap {
+        require(lut.size >= 2) {
+            "Размер LUT должен быть не меньше 2"
+        }
+
+        require(lut.values.size == lut.size * lut.size * lut.size * 3) {
+            "Неверный размер данных LUT"
+        }
+
+        val amount = intensity.coerceIn(0f, 1f)
+
+        if (amount <= 0f) {
+            return source.copy(source.config ?: Bitmap.Config.ARGB_8888, true)
+        }
 
         val width = source.width
         val height = source.height
 
         val pixels = IntArray(width * height)
-
         source.getPixels(
             pixels,
             0,
@@ -155,254 +158,459 @@ object LutProcessor {
             height
         )
 
-        val output = IntArray(pixels.size)
+        val result = IntArray(pixels.size)
 
         for (i in pixels.indices) {
             val pixel = pixels[i]
 
-            val a = pixel ushr 24 and 255
-            val r = (pixel ushr 16 and 255) / 255f
-            val g = (pixel ushr 8 and 255) / 255f
-            val b = (pixel and 255) / 255f
+            val alpha = (pixel ushr 24) and 0xFF
 
-            val result = sample(r, g, b, lut)
+            val originalR = ((pixel ushr 16) and 0xFF) / 255f
+            val originalG = ((pixel ushr 8) and 0xFF) / 255f
+            val originalB = (pixel and 0xFF) / 255f
 
-            output[i] =
-                (a shl 24) or
-                (toByte(result[0]) shl 16) or
-                (toByte(result[1]) shl 8) or
-                toByte(result[2])
+            val filtered = sample(
+                originalR,
+                originalG,
+                originalB,
+                lut
+            )
+
+            val r = mix(originalR, filtered[0], amount)
+            val g = mix(originalG, filtered[1], amount)
+            val b = mix(originalB, filtered[2], amount)
+
+            result[i] =
+                (alpha shl 24) or
+                (toByte(r) shl 16) or
+                (toByte(g) shl 8) or
+                toByte(b)
         }
 
         return Bitmap.createBitmap(
-            output,
+            result,
             width,
             height,
             Bitmap.Config.ARGB_8888
         )
     }
 
-    private fun sample(
-        r: Float,
-        g: Float,
-        b: Float,
-        lut: CubeLut
-    ): FloatArray {
-        val n = lut.size
-        val table = lut.values
+    /**
+     * Загружает LUT из стандартного .cube-файла.
+     */
+    fun loadCube(input: InputStream): CubeLut {
+        val rows = ArrayList<FloatArray>()
+        var lutSize: Int? = null
 
-        val x = r.coerceIn(0f, 1f) * (n - 1)
-        val y = g.coerceIn(0f, 1f) * (n - 1)
-        val z = b.coerceIn(0f, 1f) * (n - 1)
+        input.bufferedReader().use { reader ->
+            reader.forEachLine { originalLine ->
+                val line = originalLine
+                    .substringBefore("#")
+                    .trim()
 
-        val x0 = floor(x).toInt()
-        val y0 = floor(y).toInt()
-        val z0 = floor(z).toInt()
+                if (line.isEmpty()) {
+                    return@forEachLine
+                }
 
-        val x1 = min(x0 + 1, n - 1)
-        val y1 = min(y0 + 1, n - 1)
-        val z1 = min(z0 + 1, n - 1)
+                val parts = line.split(Regex("\\s+"))
+                if (parts.isEmpty()) {
+                    return@forEachLine
+                }
 
-        val fx = x - x0
-        val fy = y - y0
-        val fz = z - z0
+                when (parts[0].uppercase()) {
+                    "TITLE",
+                    "DOMAIN_MIN",
+                    "DOMAIN_MAX",
+                    "LUT_1D_SIZE" -> {
+                        // Эти директивы не используются в 3D LUT.
+                        return@forEachLine
+                    }
 
-        fun value(
-            ix: Int,
-            iy: Int,
-            iz: Int,
-            channel: Int
-        ): Float {
-            return table[
-                ((iz * n + iy) * n + ix) * 3 + channel
-            ]
+                    "LUT_3D_SIZE" -> {
+                        require(parts.size >= 2) {
+                            "В LUT_3D_SIZE отсутствует значение"
+                        }
+
+                        lutSize = parts[1].toIntOrNull()
+                            ?: throw IllegalArgumentException(
+                                "Неверный размер LUT_3D_SIZE"
+                            )
+
+                        require(lutSize!! >= 2) {
+                            "Размер LUT должен быть не меньше 2"
+                        }
+
+                        return@forEachLine
+                    }
+                }
+
+                if (parts.size >= 3) {
+                    val red = parts[0].toFloatOrNull()
+                    val green = parts[1].toFloatOrNull()
+                    val blue = parts[2].toFloatOrNull()
+
+                    if (red != null && green != null && blue != null) {
+                        rows.add(
+                            floatArrayOf(
+                                red.coerceIn(0f, 1f),
+                                green.coerceIn(0f, 1f),
+                                blue.coerceIn(0f, 1f)
+                            )
+                        )
+                    }
+                }
+            }
         }
 
-        fun mix(
-            a: Float,
-            b: Float,
-            t: Float
-        ): Float = a + (b - a) * t
-
-        val result = FloatArray(3)
-
-        for (channel in 0..2) {
-            val c00 = mix(
-                value(x0, y0, z0, channel),
-                value(x1, y0, z0, channel),
-                fx
+        val size = lutSize
+            ?: throw IllegalArgumentException(
+                "В .cube-файле не найден LUT_3D_SIZE"
             )
 
-            val c10 = mix(
-                value(x0, y1, z0, channel),
-                value(x1, y1, z0, channel),
-                fx
-            )
+        val expectedRows = size * size * size
 
-            val c01 = mix(
-                value(x0, y0, z1, channel),
-                value(x1, y0, z1, channel),
-                fx
-            )
-
-            val c11 = mix(
-                value(x0, y1, z1, channel),
-                value(x1, y1, z1, channel),
-                fx
-            )
-
-            result[channel] = mix(
-                mix(c00, c10, fy),
-                mix(c01, c11, fy),
-                fz
-            )
+        require(rows.size == expectedRows) {
+            "Неверное количество цветовых записей: " +
+                "ожидалось $expectedRows, получено ${rows.size}"
         }
 
-        return result
+        val values = FloatArray(expectedRows * 3)
+        var index = 0
+
+        for (row in rows) {
+            values[index++] = row[0]
+            values[index++] = row[1]
+            values[index++] = row[2]
+        }
+
+        return CubeLut(size, values)
     }
 
-    private fun toByte(value: Float): Int =
-        (value.coerceIn(0f, 1f) * 255f)
-            .toInt()
-            .coerceIn(0, 255)
+    fun loadCube(file: File): CubeLut {
+        return file.inputStream().use { input ->
+            loadCube(input)
+        }
+    }
 
-    private fun transform(
-        r0: Float,
-        g0: Float,
-        b0: Float,
-        style: Style
+    /**
+     * Трёхлинейная интерполяция внутри 3D LUT.
+     */
+    private fun sample(
+        red: Float,
+        green: Float,
+        blue: Float,
+        lut: CubeLut
     ): FloatArray {
+        val size = lut.size
+        val maxIndex = size - 1
 
-        if (style == Style.NAT) {
-            return floatArrayOf(r0, g0, b0)
+        val rPosition = red.coerceIn(0f, 1f) * maxIndex
+        val gPosition = green.coerceIn(0f, 1f) * maxIndex
+        val bPosition = blue.coerceIn(0f, 1f) * maxIndex
+
+        val r0 = floor(rPosition).toInt().coerceIn(0, maxIndex)
+        val g0 = floor(gPosition).toInt().coerceIn(0, maxIndex)
+        val b0 = floor(bPosition).toInt().coerceIn(0, maxIndex)
+
+        val r1 = min(r0 + 1, maxIndex)
+        val g1 = min(g0 + 1, maxIndex)
+        val b1 = min(b0 + 1, maxIndex)
+
+        val rf = rPosition - r0
+        val gf = gPosition - g0
+        val bf = bPosition - b0
+
+        val c000 = getColor(lut, r0, g0, b0)
+        val c100 = getColor(lut, r1, g0, b0)
+        val c010 = getColor(lut, r0, g1, b0)
+        val c110 = getColor(lut, r1, g1, b0)
+
+        val c001 = getColor(lut, r0, g0, b1)
+        val c101 = getColor(lut, r1, g0, b1)
+        val c011 = getColor(lut, r0, g1, b1)
+        val c111 = getColor(lut, r1, g1, b1)
+
+        val output = FloatArray(3)
+
+        for (channel in 0..2) {
+            val c00 = mix(c000[channel], c100[channel], rf)
+            val c10 = mix(c010[channel], c110[channel], rf)
+            val c01 = mix(c001[channel], c101[channel], rf)
+            val c11 = mix(c011[channel], c111[channel], rf)
+
+            val c0 = mix(c00, c10, gf)
+            val c1 = mix(c01, c11, gf)
+
+            output[channel] = mix(c0, c1, bf)
+                .coerceIn(0f, 1f)
         }
 
-        val luma = (
-            0.2126f * r0 +
-            0.7152f * g0 +
-            0.0722f * b0
+        return output
+    }
+
+    private fun getColor(
+        lut: CubeLut,
+        r: Int,
+        g: Int,
+        b: Int
+    ): FloatArray {
+        val index = ((b * lut.size + g) * lut.size + r) * 3
+
+        return floatArrayOf(
+            lut.values[index],
+            lut.values[index + 1],
+            lut.values[index + 2]
         )
+    }
 
-        val shadows = (1f - luma).coerceIn(0f, 1f)
-        val highlights = luma.coerceIn(0f, 1f)
+    private fun transform(
+        inputR: Float,
+        inputG: Float,
+        inputB: Float,
+        style: Style
+    ): FloatArray {
+        var r = inputR
+        var g = inputG
+        var b = inputB
 
-        var r = r0
-        var g = g0
-        var b = b0
+        val luminance =
+            0.2126f * r +
+            0.7152f * g +
+            0.0722f * b
+
+        val saturation = when (style) {
+            Style.NAT -> 1.00f
+            Style.KODACHROME_64 -> 1.17f
+            Style.PORTRA_400 -> 0.91f
+            Style.PORTRA_800 -> 0.88f
+            Style.FUJI_FILM -> 1.12f
+            Style.FUJI_PORTRAIT -> 0.86f
+            Style.CINE -> 0.92f
+            Style.TEAL_ORANGE -> 1.18f
+            Style.MOODY_AQUA -> 0.90f
+            Style.WARM -> 1.04f
+            Style.COOL -> 1.04f
+
+            Style.PORTRA_160 -> 0.88f
+            Style.KODAK_GOLD_200 -> 1.18f
+            Style.KODAK_EKTAR_100 -> 1.32f
+            Style.FUJI_PRO_400H -> 0.83f
+            Style.FUJI_VELVIA -> 1.42f
+            Style.CINEMATIC_TEAL -> 1.12f
+            Style.BLEACH_BYPASS -> 0.48f
+            Style.VINTAGE_FILM -> 0.78f
+            Style.MATTE_FILM -> 0.86f
+            Style.BLACK_AND_WHITE -> 0f
+            Style.NOIR -> 0f
+            Style.GOLDEN_HOUR -> 1.08f
+            Style.NIGHT_CINEMA -> 0.94f
+            Style.ARCTIC_BLUE -> 0.96f
+        }
+
+        r = luminance + (r - luminance) * saturation
+        g = luminance + (g - luminance) * saturation
+        b = luminance + (b - luminance) * saturation
 
         when (style) {
-
-            Style.NAT -> Unit
-
-            // Контрастный кинематографический профиль.
-            Style.CINE -> {
-                r = (r0 - 0.45f) * 1.16f + 0.45f
-                g = (g0 - 0.45f) * 1.12f + 0.45f
-                b = (b0 - 0.45f) * 1.10f + 0.45f
-
-                r += highlights * 0.035f
-                g += highlights * 0.008f
-                b -= highlights * 0.022f
-
-                g += shadows * 0.010f
-                b += shadows * 0.025f
+            Style.NAT -> {
+                r = contrast(r, 1.02f, 0.50f)
+                g = contrast(g, 1.02f, 0.50f)
+                b = contrast(b, 1.02f, 0.50f)
             }
 
-            // Насыщенная палитра с выразительными красными
-            // и тёплыми светлыми участками.
             Style.KODACHROME_64 -> {
-                r = r0 * 1.08f + 0.018f
-                g = g0 * 1.015f + 0.004f
-                b = b0 * 0.91f
+                r = contrast(r, 1.12f, 0.48f) + 0.035f
+                g = contrast(g, 1.05f, 0.48f) + 0.008f
+                b = contrast(b, 1.10f, 0.48f) - 0.025f
 
-                r = (r - 0.45f) * 1.10f + 0.45f
-                g = (g - 0.45f) * 1.045f + 0.45f
-
-                r += highlights * 0.018f
-                b -= highlights * 0.012f
+                r += luminance * 0.035f
+                b -= luminance * 0.025f
             }
 
-            // Мягкая насыщенность и естественная кожа.
             Style.PORTRA_400 -> {
-                r = r0 * 1.035f + 0.018f
-                g = g0 * 1.005f + 0.006f
-                b = b0 * 0.955f + 0.008f
+                r = contrast(r, 0.96f, 0.48f) + 0.035f
+                g = contrast(g, 0.96f, 0.48f) + 0.018f
+                b = contrast(b, 0.94f, 0.48f) + 0.012f
 
-                r = (r - 0.5f) * 0.94f + 0.5f
-                g = (g - 0.5f) * 0.92f + 0.5f
-                b = (b - 0.5f) * 0.92f + 0.5f
-
-                r += highlights * 0.012f
-                b += shadows * 0.008f
+                r += (1f - luminance) * 0.012f
             }
 
-            // Более плотные тени и тёплая тональность.
             Style.PORTRA_800 -> {
-                r = (r0 - 0.45f) * 1.045f + 0.45f + 0.022f
-                g = g0 * 1.015f + 0.008f
-                b = b0 * 0.91f + 0.012f
+                r = contrast(r, 0.92f, 0.48f) + 0.045f
+                g = contrast(g, 0.93f, 0.48f) + 0.018f
+                b = contrast(b, 0.91f, 0.48f) + 0.005f
 
-                r += highlights * 0.018f
-                g -= shadows * 0.008f
+                b -= luminance * 0.012f
             }
 
-            // Сдержанная насыщенность и холодноватые тени.
             Style.FUJI_FILM -> {
-                r = (r0 - 0.5f) * 0.94f + 0.5f
-                g = (g0 - 0.5f) * 1.035f + 0.5f
-                b = (b0 - 0.5f) * 0.99f + 0.5f
+                r = contrast(r, 1.06f, 0.48f) + 0.006f
+                g = contrast(g, 1.07f, 0.48f) + 0.018f
+                b = contrast(b, 1.09f, 0.48f) + 0.022f
 
-                g += shadows * 0.014f
-                b += shadows * 0.018f
-
-                r += highlights * 0.008f
+                g += (1f - luminance) * 0.008f
             }
 
-            // Более мягкая портретная палитра.
             Style.FUJI_PORTRAIT -> {
-                r = r0 * 1.045f + 0.012f
-                g = g0 * 1.015f + 0.005f
-                b = b0 * 0.94f + 0.008f
-
-                r = (r - 0.5f) * 0.95f + 0.5f
-                g = (g - 0.5f) * 0.94f + 0.5f
-
-                r += highlights * 0.010f
-                b += shadows * 0.010f
+                r = contrast(r, 0.95f, 0.48f) + 0.025f
+                g = contrast(g, 0.96f, 0.48f) + 0.018f
+                b = contrast(b, 0.97f, 0.48f) + 0.020f
             }
 
-            // Бирюзовые тени и тёплые света.
+            Style.CINE -> {
+                r = contrast(r, 1.08f, 0.48f) + 0.018f
+                g = contrast(g, 1.04f, 0.48f) + 0.004f
+                b = contrast(b, 1.08f, 0.48f) + 0.018f
+
+                b += (1f - luminance) * 0.018f
+                r += luminance * 0.012f
+            }
+
             Style.TEAL_ORANGE -> {
-                r = r0 * 1.055f + highlights * 0.035f
-                g = g0 * 1.005f + shadows * 0.018f
-                b = b0 * 1.045f + shadows * 0.045f
-
-                r -= shadows * 0.018f
-                b -= highlights * 0.030f
+                r += (luminance - 0.35f) * 0.10f
+                g += (1f - luminance) * 0.008f
+                b += (0.55f - luminance) * 0.12f
             }
 
-            // Холодная атмосферная палитра.
             Style.MOODY_AQUA -> {
-                r = r0 * 0.91f - 0.004f
-                g = g0 * 1.015f + shadows * 0.010f
-                b = b0 * 1.075f + 0.012f
+                r = contrast(r, 0.94f, 0.46f) - 0.012f
+                g = contrast(g, 0.98f, 0.46f) + 0.010f
+                b = contrast(b, 1.04f, 0.46f) + 0.035f
 
-                r = (r - 0.45f) * 1.045f + 0.45f
-                b = (b - 0.45f) * 1.055f + 0.45f
-
-                g += shadows * 0.012f
+                b += (1f - luminance) * 0.025f
             }
 
             Style.WARM -> {
-                r = r0 * 1.10f + 0.020f
-                g = g0 * 1.025f + 0.005f
-                b = b0 * 0.88f - 0.005f
+                r += 0.055f
+                g += 0.018f
+                b -= 0.035f
             }
 
             Style.COOL -> {
-                r = r0 * 0.90f
-                g = g0 * 1.005f
-                b = b0 * 1.10f + 0.018f
+                r -= 0.025f
+                g += 0.006f
+                b += 0.045f
+            }
+
+            Style.PORTRA_160 -> {
+                r = contrast(r, 0.97f, 0.48f) + 0.026f
+                g = contrast(g, 0.97f, 0.48f) + 0.018f
+                b = contrast(b, 0.95f, 0.48f) + 0.016f
+
+                r += luminance * 0.008f
+            }
+
+            Style.KODAK_GOLD_200 -> {
+                r = contrast(r, 1.08f, 0.47f) + 0.045f
+                g = contrast(g, 1.04f, 0.47f) + 0.022f
+                b = contrast(b, 1.03f, 0.47f) - 0.018f
+
+                r += luminance * 0.025f
+                g += luminance * 0.008f
+            }
+
+            Style.KODAK_EKTAR_100 -> {
+                r = contrast(r, 1.13f, 0.48f) + 0.012f
+                g = contrast(g, 1.13f, 0.48f) + 0.006f
+                b = contrast(b, 1.15f, 0.48f) + 0.008f
+
+                g += (1f - luminance) * 0.008f
+            }
+
+            Style.FUJI_PRO_400H -> {
+                r = contrast(r, 0.94f, 0.49f) + 0.018f
+                g = contrast(g, 0.97f, 0.49f) + 0.026f
+                b = contrast(b, 0.98f, 0.49f) + 0.025f
+
+                g += (1f - luminance) * 0.012f
+            }
+
+            Style.FUJI_VELVIA -> {
+                r = contrast(r, 1.18f, 0.48f) + 0.006f
+                g = contrast(g, 1.20f, 0.48f) + 0.012f
+                b = contrast(b, 1.22f, 0.48f) + 0.018f
+
+                g += luminance * 0.008f
+            }
+
+            Style.CINEMATIC_TEAL -> {
+                r = contrast(r, 1.08f, 0.46f) + luminance * 0.025f
+                g = contrast(g, 1.02f, 0.46f) + 0.008f
+                b = contrast(b, 1.10f, 0.46f) + 0.035f
+
+                b += (1f - luminance) * 0.025f
+                r += luminance * 0.025f
+            }
+
+            Style.BLEACH_BYPASS -> {
+                r = contrast(r, 1.28f, 0.48f)
+                g = contrast(g, 1.28f, 0.48f)
+                b = contrast(b, 1.28f, 0.48f)
+
+                r = mix(r, luminance, 0.15f)
+                g = mix(g, luminance, 0.15f)
+                b = mix(b, luminance, 0.15f)
+            }
+
+            Style.VINTAGE_FILM -> {
+                r = contrast(r, 0.90f, 0.46f) + 0.045f
+                g = contrast(g, 0.89f, 0.46f) + 0.025f
+                b = contrast(b, 0.86f, 0.46f) + 0.005f
+
+                r += luminance * 0.015f
+                b -= luminance * 0.012f
+            }
+
+            Style.MATTE_FILM -> {
+                r = contrast(r, 0.82f, 0.50f) + 0.055f
+                g = contrast(g, 0.82f, 0.50f) + 0.055f
+                b = contrast(b, 0.82f, 0.50f) + 0.055f
+
+                r += 0.012f
+                g += 0.008f
+                b += 0.012f
+            }
+
+            Style.BLACK_AND_WHITE -> {
+                r = luminance
+                g = luminance
+                b = luminance
+            }
+
+            Style.NOIR -> {
+                val mono = contrast(luminance, 1.45f, 0.46f)
+
+                r = mono
+                g = mono
+                b = mono
+            }
+
+            Style.GOLDEN_HOUR -> {
+                r = contrast(r, 1.04f, 0.48f) + 0.075f
+                g = contrast(g, 1.02f, 0.48f) + 0.035f
+                b = contrast(b, 0.98f, 0.48f) - 0.035f
+
+                r += luminance * 0.025f
+            }
+
+            Style.NIGHT_CINEMA -> {
+                r = contrast(r, 1.10f, 0.40f) - 0.010f
+                g = contrast(g, 1.06f, 0.40f) + 0.006f
+                b = contrast(b, 1.12f, 0.40f) + 0.035f
+
+                b += (1f - luminance) * 0.035f
+
+                r *= 0.94f
+                g *= 0.96f
+                b *= 0.99f
+            }
+
+            Style.ARCTIC_BLUE -> {
+                r = contrast(r, 1.02f, 0.48f) - 0.025f
+                g = contrast(g, 1.04f, 0.48f) + 0.008f
+                b = contrast(b, 1.08f, 0.48f) + 0.055f
+
+                b += (1f - luminance) * 0.018f
             }
         }
 
@@ -411,5 +619,27 @@ object LutProcessor {
             g.coerceIn(0f, 1f),
             b.coerceIn(0f, 1f)
         )
+    }
+
+    private fun contrast(
+        value: Float,
+        amount: Float,
+        midpoint: Float
+    ): Float {
+        return (value - midpoint) * amount + midpoint
+    }
+
+    private fun mix(
+        a: Float,
+        b: Float,
+        amount: Float
+    ): Float {
+        return a + (b - a) * amount
+    }
+
+    private fun toByte(value: Float): Int {
+        return (value.coerceIn(0f, 1f) * 255f)
+            .toInt()
+            .coerceIn(0, 255)
     }
 }
