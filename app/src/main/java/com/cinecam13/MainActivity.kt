@@ -656,4 +656,34 @@ class MainActivity : ComponentActivity() {
         capture.takePicture(
             options,
             ContextCompat.getMainExecutor(this),
-            object : ImageCaptu
+            object : ImageCapture.OnImageSavedCallback {
+
+                override fun onImageSaved(
+                    output: ImageCapture.OutputFileResults
+                ) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Фото сохранено в Pictures/CineCam13",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+
+                override fun onError(
+                    exception: ImageCaptureException
+                ) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Ошибка фото: ${exception.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        )
+    }
+
+    private fun dp(value: Int): Int {
+        return (
+            value * resources.displayMetrics.density + 0.5f
+        ).toInt()
+    }
+}
