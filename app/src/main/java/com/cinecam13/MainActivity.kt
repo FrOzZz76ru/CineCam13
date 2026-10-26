@@ -26,13 +26,20 @@ import androidx.core.content.ContextCompat
 class MainActivity : ComponentActivity() {
 
     private lateinit var previewView: PreviewView
+    private lateinit var zoomRow: LinearLayout
+
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
 
     private var frontCamera = false
     private var zoom = 1f
+    private var minSupportedZoom = 1f
+    private var maxSupportedZoom = 1f
+
     private var currentMode = "PHOTO"
     private var currentStyle = "NATURAL"
+
+    private val zoomButtons = mutableListOf<TextView>()
 
     private val bg = Color.rgb(9, 9, 11)
     private val white = Color.WHITE
@@ -88,18 +95,121 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ───── ZOOM BUTTONS ─────
+
+    private fun updateZoomButtons() {
+        zoomButtons.forEach { button ->
+            val factor = button.tag as Float
+            val selected = kotlin.math.abs(factor - zoom) < 0.01f
+
+            button.setTextColor(
+                if (selected) gold else white
+            )
+
+            button.setBackgroundColor(
+                if (selected) {
+                    Color.rgb(40, 35, 27)
+                } else {
+                    Color.TRANSPARENT
+                }
+            )
+        }
+    }
+
+    private fun rebuildZoomButtons() {
+        if (!::zoomRow.isInitialized) return
+
+        zoomRow.removeAllViews()
+        zoomButtons.clear()
+
+        val presets = if (frontCamera) {
+            listOf(0.8f, 1f, 1.5f, 2f, 3f)
+        } else {
+            listOf(0.6f, 1f, 1.5f, 2f, 3f)
+        }
+
+        val availablePresets = presets.filter {
+            it >= minSupportedZoom - 0.001f &&
+                it <= maxSupportedZoom + 0.001f
+        }
+
+        // 1× показываем как основной вариант,
+        // если камера сообщает обычный диапазон зума.
+        if (availablePresets.isEmpty()) {
+            val fallback = zoom.coerceIn(
+                minSupportedZoom,
+                maxSupportedZoom
+            )
+
+            addZoomButton(fallback)
+        } else {
+            availablePresets.forEach { factor ->
+                addZoomButton(factor)
+            }
+        }
+
+        updateZoomButtons()
+    }
+
+    private fun addZoomButton(factor: Float) {
+        val button = text(
+            "${factor}×",
+            13f,
+            if (kotlin.math.abs(factor - zoom) < 0.01f) {
+                gold
+            } else {
+                white
+            }
+        ).apply {
+            tag = factor
+
+            setOnClickListener {
+                val state = camera?.cameraInfo?.zoomState?.value
+
+                val minZoom = state?.minZoomRatio
+                    ?: minSupportedZoom
+
+                val maxZoom = state?.maxZoomRatio
+                    ?: maxSupportedZoom
+
+                val actualZoom = factor.coerceIn(
+                    minZoom,
+                    maxZoom
+                )
+
+                zoom = actualZoom
+
+                camera?.cameraControl?.setZoomRatio(actualZoom)
+
+                updateZoomButtons()
+            }
+        }
+
+        zoomButtons.add(button)
+
+        zoomRow.addView(
+            button,
+            LinearLayout.LayoutParams(
+                0,
+                dp(38),
+                1f
+            ).apply {
+                setMargins(dp(3), 0, dp(3), 0)
+            }
+        )
+    }
+
+    // ───── INTERFACE ─────
+
     private fun buildInterface() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(bg)
-
-            // Небольшие отступы, чтобы элементы не упирались
-            // в края дисплея.
             setPadding(dp(14), dp(4), dp(14), dp(4))
         }
 
-        // ───── ВЕРХНЯЯ ПАНЕЛЬ ─────
+        // ───── HEADER ─────
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -130,7 +240,7 @@ class MainActivity : ComponentActivity() {
 
         root.addView(header)
 
-        // ───── ПРЕВЬЮ КАМЕРЫ ─────
+        // ───── CAMERA PREVIEW ─────
 
         val previewFrame = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(24, 24, 27))
@@ -167,8 +277,6 @@ class MainActivity : ComponentActivity() {
             }
         )
 
-        // Превью получает только свободное место.
-        // Панели управления остаются ниже него.
         root.addView(
             previewFrame,
             LinearLayout.LayoutParams(
@@ -181,71 +289,15 @@ class MainActivity : ComponentActivity() {
             }
         )
 
-        // ───── ЗУМ ─────
+        // ───── ZOOM ─────
 
-        val zoomRow = LinearLayout(this).apply {
+        zoomRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
 
-        val zoomButtons = mutableListOf<TextView>()
-
-        fun updateZoomButtons() {
-            zoomButtons.forEach { button ->
-                val factor = button.tag as Float
-                button.setTextColor(
-                    if (factor == zoom) gold else white
-                )
-
-                button.setBackgroundColor(
-                    if (factor == zoom) {
-                        Color.rgb(40, 35, 27)
-                    } else {
-                        Color.TRANSPARENT
-                    }
-                )
-            }
-        }
-
-        listOf(0.6f, 1f, 1.5f, 2f, 3f).forEach { factor ->
-
-            val button = text(
-                "${factor}×",
-                13f,
-                if (factor == 1f) gold else white
-            ).apply {
-                tag = factor
-
-                setOnClickListener {
-                    zoom = factor
-
-                    val state = camera?.cameraInfo?.zoomState?.value
-                    val maxZoom = state?.maxZoomRatio ?: 1f
-                    val minZoom = state?.minZoomRatio ?: 1f
-
-                    val actualZoom = factor.coerceIn(
-                        minZoom,
-                        maxZoom
-                    )
-
-                    camera?.cameraControl?.setZoomRatio(actualZoom)
-
-                    updateZoomButtons()
-                }
-            }
-
-            zoomButtons.add(button)
-
-            zoomRow.addView(
-                button,
-                LinearLayout.LayoutParams(0, dp(38), 1f).apply {
-                    setMargins(dp(3), 0, dp(3), 0)
-                }
-            )
-        }
-
         root.addView(zoomRow)
-        updateZoomButtons()
+        rebuildZoomButtons()
 
         // ───── CINEMATIC LOOK ─────
 
@@ -275,8 +327,12 @@ class MainActivity : ComponentActivity() {
 
         fun updateStyles() {
             styleButtons.forEach { button ->
-                val selected = button.text.toString() == currentStyle
-                button.setTextColor(if (selected) gold else muted)
+                val selected =
+                    button.text.toString() == currentStyle
+
+                button.setTextColor(
+                    if (selected) gold else muted
+                )
             }
         }
 
@@ -317,7 +373,7 @@ class MainActivity : ComponentActivity() {
         root.addView(styles)
         updateStyles()
 
-        // ───── РЕЖИМ СЪЁМКИ ─────
+        // ───── SHOOTING MODE ─────
 
         val modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -331,6 +387,7 @@ class MainActivity : ComponentActivity() {
             videoButton.setTextColor(
                 if (currentMode == "VIDEO") gold else muted
             )
+
             photoButton.setTextColor(
                 if (currentMode == "PHOTO") gold else muted
             )
@@ -364,7 +421,7 @@ class MainActivity : ComponentActivity() {
 
         root.addView(modeRow)
 
-        // ───── НИЖНЯЯ ПАНЕЛЬ ─────
+        // ───── BOTTOM CONTROLS ─────
 
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -399,34 +456,45 @@ class MainActivity : ComponentActivity() {
             LinearLayout.LayoutParams(0, dp(66), 1f)
         )
 
-        // Круглая кнопка затвора.
         val shutter = FrameLayout(this).apply {
             foregroundGravity = Gravity.CENTER
         }
 
         val outerCircle = View(this).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(Color.TRANSPARENT)
-                setStroke(dp(3), white)
-            }
+            background =
+                android.graphics.drawable.GradientDrawable().apply {
+                    shape =
+                        android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(Color.TRANSPARENT)
+                    setStroke(dp(3), white)
+                }
         }
 
         val innerCircle = View(this).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(white)
-            }
+            background =
+                android.graphics.drawable.GradientDrawable().apply {
+                    shape =
+                        android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(white)
+                }
         }
 
         shutter.addView(
             outerCircle,
-            FrameLayout.LayoutParams(dp(58), dp(58), Gravity.CENTER)
+            FrameLayout.LayoutParams(
+                dp(58),
+                dp(58),
+                Gravity.CENTER
+            )
         )
 
         shutter.addView(
             innerCircle,
-            FrameLayout.LayoutParams(dp(46), dp(46), Gravity.CENTER)
+            FrameLayout.LayoutParams(
+                dp(46),
+                dp(46),
+                Gravity.CENTER
+            )
         )
 
         shutter.setOnClickListener {
@@ -463,11 +531,9 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
     }
 
-    private fun dp(value: Int): Int {
-        return (value * resources.displayMetrics.density + 0.5f).toInt()
-    }
+    // ───── CAMERA START ─────
 
-        private fun startCamera() {
+    private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
 
         future.addListener({
@@ -510,13 +576,17 @@ class MainActivity : ComponentActivity() {
 
                 val state = camera?.cameraInfo?.zoomState?.value
 
-                val minZoom = state?.minZoomRatio ?: 1f
-                val maxZoom = state?.maxZoomRatio ?: 1f
+                minSupportedZoom = state?.minZoomRatio ?: 1f
+                maxSupportedZoom = state?.maxZoomRatio ?: 1f
 
-                // Сохраняем только зум, доступный этой камере.
-                zoom = zoom.coerceIn(minZoom, maxZoom)
+                zoom = zoom.coerceIn(
+                    minSupportedZoom,
+                    maxSupportedZoom
+                )
 
                 camera?.cameraControl?.setZoomRatio(zoom)
+
+                rebuildZoomButtons()
 
             } catch (e: Exception) {
                 Toast.makeText(
@@ -526,7 +596,10 @@ class MainActivity : ComponentActivity() {
                 ).show()
             }
         }, ContextCompat.getMainExecutor(this))
-        }
+    }
+
+    // ───── TAKE PHOTO ─────
+
     private fun takePhoto() {
         val capture = imageCapture ?: run {
             Toast.makeText(
@@ -542,7 +615,12 @@ class MainActivity : ComponentActivity() {
                 MediaStore.Images.Media.DISPLAY_NAME,
                 "CineCam_${System.currentTimeMillis()}.jpg"
             )
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+
+            put(
+                MediaStore.Images.Media.MIME_TYPE,
+                "image/jpeg"
+            )
+
             put(
                 MediaStore.Images.Media.RELATIVE_PATH,
                 "Pictures/CineCam13"
@@ -581,5 +659,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
+    }
+
+    private fun dp(value: Int): Int {
+        return (
+            value * resources.displayMetrics.density + 0.5f
+        ).toInt()
     }
 }
